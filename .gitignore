@@ -23,6 +23,10 @@ htmlcov/
 venv/
 env/
 
+# Lockfiles from package managers we haven't opted into
+uv.lock
+poetry.lock
+
 # Build artifacts inside build/ (we commit packaging scripts but not their output)
 build/_nuitka/
 build/dist/

@@ -218,6 +218,18 @@ def run_spike() -> dict[str, Any]:
     print(f"      zoom re-query: {zoom_ms:.1f} ms, RSS: {rss_after_zoom:.1f} MB")
     print(f"      peak RSS: {peak_rss:.1f} MB")
 
+    # If --show, restore the full range so the window opens with all data visible
+    if "--show" in sys.argv:
+        for plot, (avg_curve, min_curve, max_curve, tool, sensor) in zip(plots, curve_handles):
+            path = DATA_DIR / f"{tool}.parquet"
+            arrow_tbl = query_full_range(con, path, sensor)
+            x, avg, mn, mx = _unpack(arrow_tbl)
+            avg_curve.setData(x, avg)
+            min_curve.setData(x, mn)
+            max_curve.setData(x, mx)
+        plots[0].enableAutoRange("xy")
+        app.processEvents()
+
     return {
         "dataset_info": dataset_info,
         "total_rows": total_rows,
