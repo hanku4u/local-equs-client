@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-equs-client"
+version = "0.1.0"
+description = "Local EQUS desktop client for sensor data exploration"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+    "PySide6>=6.6",
+    "pyqtgraph>=0.13",
+    "duckdb>=0.10",
+    "pyarrow>=15.0",
+    "httpx>=0.27",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "responses>=0.25",
+    "ruff>=0.5",
+    "black>=24.0",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+local-equs-client = "local_equs_client.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+
+[[tool.mypy.overrides]]
+module = [
+    "local_equs_client.data_layer.*",
+    "local_equs_client.selection.*",
+]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["local_equs_client.ui.*"]
+ignore_errors = false
+strict = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"

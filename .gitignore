@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+.eggs/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Build artifacts inside build/ (we commit packaging scripts but not their output)
+build/_nuitka/
+build/dist/
+build/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings (user-specific overrides)
+.claude/settings.local.json
+
+# Local app state and user data
+*.log
+logs/
+data/
+*.db
+*.sqlite
+*.sqlite3
+config.toml
+.env
+.env.local
+
+# Spike output (see spike/README.md)
+spike/results.md
+spike/*.parquet
