@@ -27,6 +27,10 @@ dev = [
     "black>=24.0",
     "mypy>=1.10",
 ]
+spike = [
+    "numpy>=1.26",
+    "psutil>=5.9",
+]
 
 [project.scripts]
 local-equs-client = "local_equs_client.main:main"

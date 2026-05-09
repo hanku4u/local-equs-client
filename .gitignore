@@ -54,4 +54,4 @@ config.toml
 
 # Spike output (see spike/README.md)
 spike/results.md
-spike/*.parquet
+spike/data/
