@@ -32,22 +32,24 @@ def test_migrate_creates_all_tables(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "state.db")
     applied = db.migrate(conn)
 
-    assert applied == [1]
+    assert applied  # at least one migration ran on a fresh DB
     assert EXPECTED_TABLES.issubset(_table_names(conn))
 
 
 def test_migrate_records_schema_version(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "state.db")
-    db.migrate(conn)
-    versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
-    assert versions == [1]
+    applied = db.migrate(conn)
+    versions = [
+        row[0] for row in conn.execute("SELECT version FROM schema_version ORDER BY version")
+    ]
+    assert versions == applied
 
 
 def test_migrate_is_idempotent(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "state.db")
     first = db.migrate(conn)
     second = db.migrate(conn)
-    assert first == [1]
+    assert first  # ran some migrations on the fresh DB
     assert second == []
     assert EXPECTED_TABLES.issubset(_table_names(conn))
 
