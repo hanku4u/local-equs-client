@@ -318,6 +318,30 @@ def test_canonical_and_raw_combine_without_duplicates(library_with_files) -> Non
     assert cols == ("ChamberPressure_torr", "rf_power")  # de-duped, order preserved
 
 
+def test_overview_mode_picks_coarser_buckets(library_with_files) -> None:
+    """C4.2: overview targets ~100 points/chart so buckets are coarser than standard."""
+    data_dir, conn = library_with_files
+    library = LocalLibrary(data_dir, conn)
+    planner = QueryPlanner(library)
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    # 1-hour window: standard=2000 → 1.8s/pt → 10s; overview=100 → 36s/pt → 1min.
+    selection = _make_selection(start=start, end=start + timedelta(hours=1))
+
+    standard_plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
+    overview_plan = planner.plan(selection, mode="overview", viewport_width_px=1920)
+    focus_plan = planner.plan(selection, mode="focus", viewport_width_px=1920)
+
+    # Strict ordering: overview ≥ standard ≥ focus.
+    assert (
+        overview_plan.target_resolution
+        >= standard_plan.target_resolution
+        >= focus_plan.target_resolution
+    )
+    # And overview is genuinely coarser than standard for this range.
+    assert overview_plan.target_resolution > standard_plan.target_resolution
+
+
 def test_canonical_without_metadata_cache_records_missing(library_with_files) -> None:
     data_dir, conn = library_with_files
     library = LocalLibrary(data_dir, conn)

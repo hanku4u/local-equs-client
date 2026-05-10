@@ -20,7 +20,15 @@ from local_equs_client.selection.types import Selection, TimeRange, ViewMode
 if TYPE_CHECKING:
     from local_equs_client.data_layer.metadata_cache import MetadataCache
 
-_TARGET_POINTS_STANDARD = 2000
+# C4.2: per-mode point budget. Overview wants ~100 / chart (a sparkline-class
+# density), standard wants the M1 ~2000, focus wants ~5000 so a small selected
+# set can really show fine structure.
+_TARGET_POINTS: dict[str, int] = {
+    "overview": 100,
+    "standard": 2000,
+    "focus": 5000,
+}
+_TARGET_POINTS_DEFAULT = 2000
 
 # Clean buckets that DuckDB's time_bucket() handles cleanly. Ordered ascending;
 # the smallest bucket whose interval is >= the raw "range / target_points" wins.
@@ -80,11 +88,13 @@ class QueryPlanner:
 
         Canonical sensors are expanded per tool through ``MetadataCache.mapping``;
         missing mappings are surfaced via :attr:`QueryPlan.missing_mappings` and
-        the human-readable warnings list. M1 chose ``target_resolution`` for
-        ~2000 points per chart regardless of ``mode`` and ``viewport_width_px``
-        — C4.2 wires those in.
+        the human-readable warnings list. C4.2 scales the point budget per
+        mode: overview ~100, standard ~2000, focus ~5000.
+        ``viewport_width_px`` will refine this in the future once we wire
+        actual viewport sizes through; for now ``mode`` is the dial.
         """
-        target_resolution = _pick_bucket(selection.time_range, _TARGET_POINTS_STANDARD)
+        target_points = _TARGET_POINTS.get(mode, _TARGET_POINTS_DEFAULT)
+        target_resolution = _pick_bucket(selection.time_range, target_points)
 
         per_tool: list[ToolQuery] = []
         warnings: list[str] = []

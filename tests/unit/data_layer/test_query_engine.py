@@ -263,6 +263,58 @@ def test_per_tool_error_isolated(tmp_path: Path) -> None:
     assert results["bad_tool"].message  # non-empty
 
 
+def test_query_cache_hit_skips_duckdb(tmp_path: Path) -> None:
+    """C4.3: a populated cache should return without touching DuckDB."""
+    from local_equs_client.data_layer.query_cache import CacheKey, QueryCache
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    bogus = tmp_path / "does-not-exist.parquet"  # would crash if we hit DuckDB
+    plan = _make_plan(
+        queries=[
+            ToolQuery(
+                tool_id="etch_a1",
+                file_paths=(bogus,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=30)),
+            )
+        ],
+        resolution=timedelta(seconds=1),
+    )
+    cache = QueryCache()
+    seeded = pa.table({"bucket": pa.array([0], type=pa.int64())})
+    cache.put(CacheKey.from_tool_query(plan.per_tool_queries[0], plan.target_resolution), seeded)
+
+    engine = QueryEngine(cache=cache)
+    results = engine.execute(plan)
+
+    assert results["etch_a1"] is seeded
+
+
+def test_query_engine_populates_cache_on_run(tmp_path: Path) -> None:
+    from local_equs_client.data_layer.query_cache import CacheKey, QueryCache
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "etch_a1.parquet"
+    _write_parquet(parquet, start=start, n_rows=120)
+    plan = _make_plan(
+        queries=[
+            ToolQuery(
+                tool_id="etch_a1",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=12)),
+            )
+        ],
+        resolution=timedelta(seconds=1),
+    )
+    cache = QueryCache()
+    engine = QueryEngine(cache=cache)
+    engine.execute(plan)
+
+    key = CacheKey.from_tool_query(plan.per_tool_queries[0], plan.target_resolution)
+    assert cache.get(key) is not None
+
+
 def test_cancellation_raises_query_cancelled(tmp_path: Path) -> None:
     """Cancellation polled before any future completes."""
     start = datetime(2026, 1, 1, tzinfo=UTC)
