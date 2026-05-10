@@ -20,6 +20,7 @@ from local_equs_client.data_layer.query_planner import QueryPlan, QueryPlanner
 from local_equs_client.data_layer.threading import BackgroundJob, JobRunner
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.selection.types import ViewMode
+from local_equs_client.selection.view_controller import ViewController
 
 
 class _QueryJob(BackgroundJob):
@@ -52,6 +53,7 @@ class QueryController(QObject):
         planner: QueryPlanner,
         engine: QueryEngine,
         runner: JobRunner | None = None,
+        view_controller: ViewController | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -59,6 +61,7 @@ class QueryController(QObject):
         self._planner = planner
         self._engine = engine
         self._runner = runner or JobRunner()
+        self._view_controller = view_controller
 
         self._mode: ViewMode = "standard"
         self._viewport_width = self.DEFAULT_VIEWPORT_WIDTH
@@ -71,6 +74,10 @@ class QueryController(QObject):
         self._current_job: _QueryJob | None = None
 
         self._model.selectionChanged.connect(self._debounce.start)
+        if self._view_controller is not None:
+            # A mode flip is also a reason to re-query.
+            self._view_controller.modeChanged.connect(self._debounce.start)
+            self._view_controller.groupByChanged.connect(self._debounce.start)
 
     # --- Public surface ---------------------------------------------------
 
@@ -80,12 +87,20 @@ class QueryController(QObject):
         self._dispatch()
 
     def set_mode(self, mode: ViewMode) -> None:
-        self._mode = mode
+        """Set the mode used when no ViewController is attached. Otherwise no-op."""
+        if self._view_controller is not None:
+            self._view_controller.set_mode(mode)
+        else:
+            self._mode = mode
 
     def set_viewport_width(self, width_px: int) -> None:
         self._viewport_width = max(1, width_px)
 
     # --- Internals --------------------------------------------------------
+
+    @property
+    def _current_mode(self) -> ViewMode:
+        return self._view_controller.mode if self._view_controller else self._mode
 
     def _dispatch(self) -> None:
         if self._current_job is not None:
@@ -93,7 +108,7 @@ class QueryController(QObject):
             self._current_job = None
 
         snapshot = self._model.snapshot()
-        plan = self._planner.plan(snapshot, self._mode, self._viewport_width)
+        plan = self._planner.plan(snapshot, self._current_mode, self._viewport_width)
 
         job = _QueryJob(self._engine, plan)
         captured_plan = plan
