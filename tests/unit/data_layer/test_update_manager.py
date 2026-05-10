@@ -102,3 +102,117 @@ def test_not_found_propagates(conn) -> None:
     responses.add(responses.GET, f"{_BASE}{_PATH}", status=404)
     with pytest.raises(NotFound):
         _make_manager(conn).fetch_manifest()
+
+
+# --- C2.5 diff ---------------------------------------------------------------
+
+
+def _make_manifest_files(*entries: dict) -> dict:
+    return {"version": 1, "files": list(entries)}
+
+
+def _seed_local_file(conn, *, file_id: str, tool_id: str, sha256: str | None) -> None:
+    """Insert a synthetic row into local_files (no parquet on disk needed for diffs)."""
+    columns = (
+        "file_id, tool_id, hour_bucket, min_ts, max_ts, row_count, sha256, "
+        "pinned, archived, size_bytes"
+    )
+    conn.execute(
+        f"INSERT OR REPLACE INTO local_files ({columns}) "
+        "VALUES (?, ?, NULL, 0, 0, 0, ?, 0, 0, 0)",
+        (file_id, tool_id, sha256),
+    )
+    conn.commit()
+
+
+def _manager_with_library(conn, tmp_path):
+    from local_equs_client.data_layer.local_library import LocalLibrary
+
+    library = LocalLibrary(tmp_path / "data", conn)
+    http = HttpClient(_BASE, _CLIENT_ID, version="0.1.0")
+    return UpdateManager(http, conn, library=library)
+
+
+def test_compute_updates_lists_missing_files(conn, tmp_path: Path) -> None:
+    manager = _manager_with_library(conn, tmp_path)
+    manifest = _make_manifest_files(
+        {"file_id": "a/1.parquet", "tool_id": "a", "sha256": "deadbeef", "size_bytes": 100},
+        {"file_id": "b/1.parquet", "tool_id": "b", "sha256": "cafef00d", "size_bytes": 200},
+    )
+
+    diff = manager.compute_updates(manifest=manifest)
+
+    assert {f.file_id for f in diff.to_download} == {"a/1.parquet", "b/1.parquet"}
+    assert diff.archived_locally == []
+
+
+def test_compute_updates_skips_files_with_matching_sha(conn, tmp_path: Path) -> None:
+    manager = _manager_with_library(conn, tmp_path)
+    _seed_local_file(conn, file_id="a/1.parquet", tool_id="a", sha256="deadbeef")
+    manifest = _make_manifest_files(
+        {"file_id": "a/1.parquet", "tool_id": "a", "sha256": "deadbeef", "size_bytes": 100},
+    )
+
+    diff = manager.compute_updates(manifest=manifest)
+    assert diff.to_download == []
+    assert diff.archived_locally == []
+
+
+def test_compute_updates_re_downloads_on_sha_mismatch(conn, tmp_path: Path) -> None:
+    manager = _manager_with_library(conn, tmp_path)
+    _seed_local_file(conn, file_id="a/1.parquet", tool_id="a", sha256="oldhash")
+    manifest = _make_manifest_files(
+        {"file_id": "a/1.parquet", "tool_id": "a", "sha256": "newhash", "size_bytes": 100},
+    )
+
+    diff = manager.compute_updates(manifest=manifest)
+    assert [f.file_id for f in diff.to_download] == ["a/1.parquet"]
+
+
+def test_compute_updates_re_downloads_when_local_has_no_sha(conn, tmp_path: Path) -> None:
+    """M1 scan didn't compute sha256, so local rows can have NULL sha. Trust the manifest."""
+    manager = _manager_with_library(conn, tmp_path)
+    _seed_local_file(conn, file_id="a/1.parquet", tool_id="a", sha256=None)
+    manifest = _make_manifest_files(
+        {"file_id": "a/1.parquet", "tool_id": "a", "sha256": "newhash", "size_bytes": 100},
+    )
+
+    diff = manager.compute_updates(manifest=manifest)
+    assert [f.file_id for f in diff.to_download] == ["a/1.parquet"]
+
+
+def test_compute_updates_marks_archived_locally(conn, tmp_path: Path) -> None:
+    manager = _manager_with_library(conn, tmp_path)
+    _seed_local_file(conn, file_id="z/old.parquet", tool_id="z", sha256="x")
+    manifest = _make_manifest_files(
+        {"file_id": "a/1.parquet", "tool_id": "a", "sha256": "y", "size_bytes": 100},
+    )
+
+    diff = manager.compute_updates(manifest=manifest)
+    archived_ids = {f.file_id for f in diff.archived_locally}
+    assert archived_ids == {"z/old.parquet"}
+
+
+def test_parse_manifest_handles_minimal_entries() -> None:
+    from local_equs_client.data_layer.update_manager import parse_manifest
+
+    parsed = parse_manifest({"files": [{"file_id": "x.parquet", "tool_id": "x"}]})
+    assert len(parsed) == 1
+    assert parsed[0].url == "/v1/data/x.parquet"
+    assert parsed[0].sha256 is None
+    assert parsed[0].size_bytes == 0
+
+
+def test_parse_manifest_rejects_garbage() -> None:
+    from local_equs_client.data_layer.update_manager import parse_manifest
+
+    assert parse_manifest(None) == []
+    assert parse_manifest({"files": "nope"}) == []
+    assert parse_manifest({"files": [{"file_id": 5}]}) == []  # wrong types
+
+
+def test_compute_updates_requires_library(conn, tmp_path: Path) -> None:
+    http = HttpClient(_BASE, _CLIENT_ID, version="0.1.0")
+    manager = UpdateManager(http, conn)  # no library
+    with pytest.raises(RuntimeError, match="LocalLibrary"):
+        manager.compute_updates(manifest=_make_manifest_files())
