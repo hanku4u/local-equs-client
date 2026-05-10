@@ -3,19 +3,18 @@
 Layout per Project_Plan §"UI Layer":
 
 - TimeRangeSelector across the top.
-- Horizontal QSplitter below: SensorPicker on the left, chart grid on the right.
+- Horizontal QSplitter below: SensorPicker on the left, ChartGrid on the right.
 
 Window geometry, splitter sizes, and dock state persist via ``QSettings``.
-The chart grid is a placeholder until C1.10 lands.
 """
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QFrame,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -25,10 +24,14 @@ from PySide6.QtWidgets import (
 
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
+from local_equs_client.data_layer.query_controller import QueryController
 from local_equs_client.selection.selection_model import SelectionModel
+from local_equs_client.ui.chart_grid import ChartGrid
 from local_equs_client.ui.sensor_picker import SensorPicker
 from local_equs_client.ui.settings_panel import SettingsPanel
 from local_equs_client.ui.time_range_selector import TimeRangeSelector
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_WIDTH = 1400
 _DEFAULT_HEIGHT = 900
@@ -43,11 +46,13 @@ class MainWindow(QMainWindow):
         selection_model: SelectionModel,
         library: LocalLibrary,
         metadata_cache: MetadataCache,
+        query_controller: QueryController,
     ) -> None:
         super().__init__()
         self._model = selection_model
         self._library = library
         self._cache = metadata_cache
+        self._controller = query_controller
         self._qsettings = QSettings("LocalEQUS", "Client")
 
         self.setWindowTitle("Local EQUS")
@@ -55,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._build_layout()
+        self._wire_query_pipeline()
         self._restore_state()
 
     # --- Layout -----------------------------------------------------------
@@ -71,8 +77,8 @@ class MainWindow(QMainWindow):
         self._picker = SensorPicker(self._model, self._library, self._cache)
         self._splitter.addWidget(self._picker)
 
-        self._chart_area = self._make_chart_placeholder()
-        self._splitter.addWidget(self._chart_area)
+        self._chart_grid = ChartGrid()
+        self._splitter.addWidget(self._chart_grid)
 
         self._splitter.setSizes(list(_DEFAULT_SPLIT))
         self._splitter.setStretchFactor(0, 0)
@@ -81,15 +87,15 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
-    def _make_chart_placeholder(self) -> QWidget:
-        frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.StyledPanel)
-        inner = QVBoxLayout(frame)
-        label = QLabel("Charts arrive in C1.10.")
-        label.setStyleSheet("color: gray; font-style: italic;")
-        inner.addWidget(label, 0, alignment=inner.alignment())
-        inner.addStretch()
-        return frame
+    # --- Query pipeline wiring -------------------------------------------
+
+    def _wire_query_pipeline(self) -> None:
+        self._controller.queryCompleted.connect(self._chart_grid.update_from_results)
+        self._controller.queryFailed.connect(self._on_query_failed)
+
+    def _on_query_failed(self, exc: object) -> None:
+        logger.warning("Query failed: %s", exc)
+        self.statusBar().showMessage(f"Query failed: {exc}", 5000)
 
     # --- Menu -------------------------------------------------------------
 
@@ -126,6 +132,7 @@ class MainWindow(QMainWindow):
         self._cache.invalidate()
         self._picker.refresh()
         self._time_range.refresh_extent()
+        self._controller.trigger()
         self.statusBar().showMessage(f"Rescan complete — {count} parquet files indexed.", 5000)
 
     def _show_about(self) -> None:
