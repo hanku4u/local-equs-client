@@ -264,3 +264,174 @@ def test_filter_hides_non_matching_branches(qapp, picker_env) -> None:
             visible_categories.append(cat.text(0))
 
     assert visible_categories == ["RF"]
+
+
+# --- C3.4: flat search results ---------------------------------------------
+
+
+def test_results_list_hidden_when_filter_empty(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    picker = SensorPicker(SelectionModel(), library, cache)
+    assert not picker._results_list.isVisible()  # noqa: SLF001
+    assert picker._results_list.count() == 0  # noqa: SLF001
+
+
+def test_filter_populates_results_with_breadcrumbs(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    picker = SensorPicker(SelectionModel(), library, cache)
+    picker._filter_edit.setText("chamber")  # noqa: SLF001
+    picker._apply_filter()  # noqa: SLF001
+
+    items = [picker._results_list.item(i).text() for i in range(picker._results_list.count())]  # noqa: SLF001
+    assert len(items) == 1
+    assert "etch_a1" in items[0]
+    assert "Process" in items[0]
+    assert "chamber_pressure" in items[0]
+
+
+def test_filter_matches_on_description(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(
+        conn,
+        canonicals=[
+            {
+                "name": "chamber_pressure",
+                "description": "Process chamber absolute pressure",
+                "units": "torr",
+                "category_id": "process",
+            }
+        ],
+        mappings=[
+            {
+                "tool_id": "etch_a1",
+                "canonical_name": "chamber_pressure",
+                "raw_name": "PCham_torr",
+            }
+        ],
+    )
+
+    picker = SensorPicker(SelectionModel(), library, cache)
+    picker._filter_edit.setText("absolute")  # noqa: SLF001
+    picker._apply_filter()  # noqa: SLF001
+
+    assert picker._results_list.count() == 1  # noqa: SLF001
+
+
+def test_clicking_a_result_toggles_tree_leaf(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    model = SelectionModel()
+    picker = SensorPicker(model, library, cache)
+    picker._filter_edit.setText("chamber")  # noqa: SLF001
+    picker._apply_filter()  # noqa: SLF001
+    result = picker._results_list.item(0)  # noqa: SLF001
+    assert result is not None
+
+    picker._on_result_clicked(result)  # noqa: SLF001
+
+    assert model.sensors_canonical == ("chamber_pressure",)
+
+
+# --- C3.5: hover detail pane ----------------------------------------------
+
+
+def test_hover_updates_detail_pane(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(
+        conn,
+        canonicals=[
+            {
+                "name": "chamber_pressure",
+                "description": "Process chamber absolute pressure",
+                "units": "torr",
+                "category_id": "process",
+            }
+        ],
+        mappings=[
+            {
+                "tool_id": "etch_a1",
+                "canonical_name": "chamber_pressure",
+                "raw_name": "PCham_torr",
+            }
+        ],
+    )
+
+    picker = SensorPicker(SelectionModel(), library, cache)
+    tool_item = picker._tree.topLevelItem(0)  # noqa: SLF001
+    assert tool_item is not None
+    cat = tool_item.child(0)
+    assert cat is not None
+    leaf = cat.child(0)
+    assert leaf is not None
+
+    picker._on_item_hovered(leaf, 0)  # noqa: SLF001
+
+    assert "chamber_pressure" in picker._detail_name.text()  # noqa: SLF001
+    assert "etch_a1" in picker._detail_name.text()  # noqa: SLF001
+    assert "absolute pressure" in picker._detail_description.text()  # noqa: SLF001
+    assert "torr" in picker._detail_units.text()  # noqa: SLF001
+    assert "Local files: 1" in picker._detail_files.text()  # noqa: SLF001
+    assert "Local range:" in picker._detail_range.text()  # noqa: SLF001
+
+
+def test_hovering_a_category_does_not_change_detail(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    picker = SensorPicker(SelectionModel(), library, cache)
+    initial = picker._detail_name.text()  # noqa: SLF001
+
+    tool_item = picker._tree.topLevelItem(0)  # noqa: SLF001
+    assert tool_item is not None
+    cat = tool_item.child(0)
+    assert cat is not None
+    picker._on_item_hovered(cat, 0)  # noqa: SLF001
+
+    assert picker._detail_name.text() == initial  # noqa: SLF001
+
+
+# --- C3.6: saved sets stub ------------------------------------------------
+
+
+def test_saved_sets_section_visible_with_placeholder(qapp, picker_env) -> None:
+    library, cache, _conn, _data_dir = picker_env
+    picker = SensorPicker(SelectionModel(), library, cache)
+    box = picker._saved_sets_box  # noqa: SLF001
+    assert box.isVisible() or not box.isHidden()
+    # The placeholder QLabel is the only child widget besides the box title.
+    children = box.findChildren(type(picker._count_label))  # noqa: SLF001 — QLabel
+    texts = [c.text() for c in children]
+    assert any("M5" in t for t in texts)
+
+
+# --- C3.7: Selected (N) header --------------------------------------------
+
+
+def test_save_as_set_button_disabled_with_m5_tooltip(qapp, picker_env) -> None:
+    library, cache, _conn, _data_dir = picker_env
+    picker = SensorPicker(SelectionModel(), library, cache)
+    assert not picker._save_as_set_btn.isEnabled()  # noqa: SLF001
+    assert "M5" in picker._save_as_set_btn.toolTip()  # noqa: SLF001
+
+
+def test_header_count_label_starts_at_zero(qapp, picker_env) -> None:
+    library, cache, _conn, _data_dir = picker_env
+    picker = SensorPicker(SelectionModel(), library, cache)
+    assert picker._count_label.text() == "Selected (0)"  # noqa: SLF001
