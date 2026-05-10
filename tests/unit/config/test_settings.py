@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,11 @@ def _isolated_app_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     settings.reset_settings()
 
 
+def _toml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def test_defaults_when_no_config_file(_isolated_app_dir: Path) -> None:
     s = settings.get_settings()
     assert s.data_dir == _isolated_app_dir / "data"
@@ -24,7 +30,9 @@ def test_defaults_when_no_config_file(_isolated_app_dir: Path) -> None:
 
 def test_reads_data_dir_from_config(_isolated_app_dir: Path) -> None:
     custom = _isolated_app_dir / "elsewhere"
-    paths.config_file().write_text(f'data_dir = "{custom}"\n', encoding="utf-8")
+    paths.config_file().write_text(
+        f"data_dir = {_toml_string(str(custom))}\n", encoding="utf-8"
+    )
 
     s = settings.get_settings()
     assert s.data_dir == custom
@@ -37,7 +45,9 @@ def test_singleton_returns_same_instance(_isolated_app_dir: Path) -> None:
 def test_reset_reloads_from_file(_isolated_app_dir: Path) -> None:
     first = settings.get_settings()
     custom = _isolated_app_dir / "after_reset"
-    paths.config_file().write_text(f'data_dir = "{custom}"\n', encoding="utf-8")
+    paths.config_file().write_text(
+        f"data_dir = {_toml_string(str(custom))}\n", encoding="utf-8"
+    )
 
     settings.reset_settings()
     second = settings.get_settings()
@@ -58,6 +68,7 @@ def test_expands_user_home_in_data_dir(
     home = tmp_path / "fake_home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     paths.config_file().write_text('data_dir = "~/equs-data"\n', encoding="utf-8")
 
     s = settings.get_settings()
@@ -68,7 +79,8 @@ def test_save_writes_config_and_updates_singleton(_isolated_app_dir: Path) -> No
     custom = _isolated_app_dir / "saved-data"
     settings.save(settings.Settings(data_dir=custom))
 
-    assert paths.config_file().read_text(encoding="utf-8").strip() == f'data_dir = "{custom}"'
+    config = tomllib.loads(paths.config_file().read_text(encoding="utf-8"))
+    assert config["data_dir"] == str(custom)
     assert settings.get_settings().data_dir == custom
 
 
