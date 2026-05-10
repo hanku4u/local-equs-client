@@ -10,6 +10,7 @@ CREATE TABLE schema_version (
 
 -- migrations/001_initial.sql
 
+-- migrations/002_local_files_size.sql adds size_bytes.
 CREATE TABLE local_files (
     file_id      TEXT    PRIMARY KEY,
     tool_id      TEXT    NOT NULL,
@@ -19,7 +20,8 @@ CREATE TABLE local_files (
     row_count    INTEGER NOT NULL,
     sha256       TEXT,
     pinned       INTEGER NOT NULL DEFAULT 0,
-    archived     INTEGER NOT NULL DEFAULT 0
+    archived     INTEGER NOT NULL DEFAULT 0,
+    size_bytes   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_local_files_tool_time ON local_files (tool_id, min_ts, max_ts);
 
