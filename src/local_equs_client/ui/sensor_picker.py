@@ -1,42 +1,51 @@
-"""Sensor picker (C1.4 flat list, C3.3 tree mode, C3.4+ search/detail/saved sets).
+"""Sensor picker (C1.4 flat list, C3.3 tree mode, C3.4-3.7 search/detail/sets/header).
 
-C3.3 (this revision) replaces the M1 flat list with a tree:
+The picker has six stacked sections plus a detail pane:
 
 ::
 
-    Tool A
-        Category 1
-            chamber_pressure
-            rf_power
-        Category 2
-            ...
-    Tool B
-        ...
+    +----------------------------------+
+    | Selected (N)   [Clear] [Save…]   |  C3.7
+    +----------------------------------+
+    | Saved Sets                       |  C3.6 (stub)
+    |   No saved sets yet — M5         |
+    +----------------------------------+
+    | Filter: [_______________]        |  C3.4
+    +----------------------------------+
+    | Results (when filter active)     |  C3.4
+    |   Etcher A1 / Process / chamber  |
+    |   ...                            |
+    +----------------------------------+
+    | Tree                             |  C3.3
+    |   Tool A                         |
+    |     Category 1                   |
+    |       chamber_pressure           |
+    |     ...                          |
+    +----------------------------------+
+    | Detail pane                      |  C3.5
+    |   Name: chamber_pressure         |
+    |   Units: torr                    |
+    |   ...                            |
+    +----------------------------------+
 
-- Tools come from ``LocalLibrary.all_files()`` (only tools with files locally).
-- Each tool's prc_group is resolved through ``MetadataCache.prc_group_for``.
-- Categories + canonical sensors come from ``MetadataCache``.
-- Tools with no cached metadata appear as childless rows so the user knows the
-  tool exists but the picker can't expand it yet.
-
-Tri-state checkboxes propagate up to category and tool nodes; the tool header
-shows ``Tool X (selected/total)``. Multi-select on canonical leaves writes to
-``SelectionModel.tools`` and ``SelectionModel.sensors_canonical`` atomically;
-the planner takes the Cartesian product per C3.2.
-
-A debounced (150ms) filter matches case-insensitively across canonical name,
-units, description, and tool id; non-matching leaves hide and any branch with
-no visible descendants collapses to ``setHidden(True)``.
+Selection still goes through ``SelectionModel.tools`` +
+``SelectionModel.sensors_canonical``; results-list clicks toggle the same
+backing items as the tree.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
+    QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -50,19 +59,25 @@ from local_equs_client.data_layer.metadata_cache import (
     MetadataCache,
 )
 from local_equs_client.selection.selection_model import SelectionModel
+from local_equs_client.selection.types import TimeRange
 
 _FILTER_DEBOUNCE_MS = 150
 _TOOL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 _SENSOR_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 _NODE_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+_DESCRIPTION_ROLE = int(Qt.ItemDataRole.UserRole) + 4
+_UNITS_ROLE = int(Qt.ItemDataRole.UserRole) + 5
 _NODE_TOOL = "tool"
 _NODE_CATEGORY = "category"
 _NODE_SENSOR = "sensor"
-_NODE_OTHER = "category"  # uncategorized sensors live under a synthetic "Other"
+
+_SAVED_SETS_PLACEHOLDER = "No saved sets yet — coming in M5"
+_SAVE_AS_SET_TOOLTIP = "Coming in M5"
+_DETAIL_EMPTY = "Hover a sensor to see details."
 
 
 class SensorPicker(QWidget):
-    """Tree picker grouping canonical sensors by tool → category → leaf."""
+    """Tree picker with search, detail pane, and (M5-stub) saved sets section."""
 
     def __init__(
         self,
@@ -86,24 +101,85 @@ class SensorPicker(QWidget):
     # --- UI construction --------------------------------------------------
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
 
-        self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText("Filter sensors…")
-        layout.addWidget(self._filter_edit)
-
+        # C3.7 — Selected (N) header with Clear all + (disabled) Save as set
         header_row = QHBoxLayout()
         self._count_label = QLabel("Selected (0)")
-        self._clear_btn = QPushButton("Clear all")
+        header_font = QFont(self._count_label.font())
+        header_font.setBold(True)
+        self._count_label.setFont(header_font)
         header_row.addWidget(self._count_label)
         header_row.addStretch()
+        self._clear_btn = QPushButton("Clear all")
         header_row.addWidget(self._clear_btn)
-        layout.addLayout(header_row)
+        self._save_as_set_btn = QPushButton("Save as set…")
+        self._save_as_set_btn.setEnabled(False)
+        self._save_as_set_btn.setToolTip(_SAVE_AS_SET_TOOLTIP)
+        header_row.addWidget(self._save_as_set_btn)
+        outer.addLayout(header_row)
+
+        # C3.6 — Saved sets section (read-only stub)
+        self._saved_sets_box = QGroupBox("Saved Sets")
+        sets_layout = QVBoxLayout(self._saved_sets_box)
+        placeholder = QLabel(_SAVED_SETS_PLACEHOLDER)
+        placeholder.setStyleSheet("color: gray; font-style: italic;")
+        sets_layout.addWidget(placeholder)
+        outer.addWidget(self._saved_sets_box)
+
+        # C3.4 — Filter / search box
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter sensors…")
+        outer.addWidget(self._filter_edit)
+
+        # Tree (C3.3) and detail pane (C3.5) live inside a vertical splitter
+        # so the user can give the detail pane more / less room.
+        body_splitter = QSplitter(Qt.Orientation.Vertical)
+        outer.addWidget(body_splitter, stretch=1)
+
+        # Search results + tree share the top section.
+        top_section = QWidget()
+        top_layout = QVBoxLayout(top_section)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._results_label = QLabel("Results")
+        self._results_label.setVisible(False)
+        top_layout.addWidget(self._results_label)
+        self._results_list = QListWidget()
+        self._results_list.setVisible(False)
+        self._results_list.setMaximumHeight(180)
+        top_layout.addWidget(self._results_list)
 
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setColumnCount(1)
-        layout.addWidget(self._tree)
+        self._tree.setMouseTracking(True)
+        top_layout.addWidget(self._tree, stretch=1)
+
+        body_splitter.addWidget(top_section)
+
+        # C3.5 — detail pane
+        self._detail_box = QGroupBox("Details")
+        detail_layout = QVBoxLayout(self._detail_box)
+        self._detail_name = QLabel(_DETAIL_EMPTY)
+        self._detail_name.setStyleSheet("color: gray;")
+        self._detail_description = QLabel("")
+        self._detail_description.setWordWrap(True)
+        self._detail_units = QLabel("")
+        self._detail_files = QLabel("")
+        self._detail_range = QLabel("")
+        for w in (
+            self._detail_name,
+            self._detail_description,
+            self._detail_units,
+            self._detail_files,
+            self._detail_range,
+        ):
+            detail_layout.addWidget(w)
+        detail_layout.addStretch()
+        body_splitter.addWidget(self._detail_box)
+        body_splitter.setStretchFactor(0, 3)
+        body_splitter.setStretchFactor(1, 1)
 
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
@@ -113,6 +189,10 @@ class SensorPicker(QWidget):
         self._filter_edit.textChanged.connect(self._filter_timer.start)
         self._filter_timer.timeout.connect(self._apply_filter)
         self._tree.itemChanged.connect(self._on_item_changed)
+        self._tree.itemEntered.connect(self._on_item_hovered)
+        self._results_list.itemEntered.connect(self._on_result_hovered)
+        self._results_list.itemClicked.connect(self._on_result_clicked)
+        self._results_list.setMouseTracking(True)
         self._clear_btn.clicked.connect(self._on_clear)
 
     # --- Public ----------------------------------------------------------
@@ -130,6 +210,7 @@ class SensorPicker(QWidget):
             self._tree.blockSignals(False)
         self._sync_from_model()
         self._apply_filter()
+        self._show_detail_empty()
 
     # --- Tree construction -----------------------------------------------
 
@@ -154,8 +235,6 @@ class SensorPicker(QWidget):
         if not sensors:
             return
 
-        # Group canonicals by category id; sensors with unknown / missing
-        # category land in a synthetic "Other" bucket.
         by_category: dict[str | None, list[CanonicalSensor]] = {}
         for c in sensors:
             by_category.setdefault(c.category_id, []).append(c)
@@ -187,6 +266,8 @@ class SensorPicker(QWidget):
                 leaf.setData(0, _TOOL_ROLE, tool_id)
                 leaf.setData(0, _SENSOR_ROLE, sensor.name)
                 leaf.setData(0, _NODE_KIND_ROLE, _NODE_SENSOR)
+                leaf.setData(0, _DESCRIPTION_ROLE, sensor.description or "")
+                leaf.setData(0, _UNITS_ROLE, sensor.units or "")
                 leaf.setFlags(
                     Qt.ItemFlag.ItemIsEnabled
                     | Qt.ItemFlag.ItemIsSelectable
@@ -194,7 +275,7 @@ class SensorPicker(QWidget):
                 )
                 leaf.setCheckState(0, Qt.CheckState.Unchecked)
 
-    # --- Filter ----------------------------------------------------------
+    # --- Filter + search results ----------------------------------------
 
     def _apply_filter(self) -> None:
         needle = self._filter_edit.text().casefold().strip()
@@ -204,6 +285,7 @@ class SensorPicker(QWidget):
                 continue
             tool_visible = self._filter_branch(tool_item, needle)
             tool_item.setHidden(not tool_visible)
+        self._rebuild_results(needle)
 
     def _filter_branch(self, node: QTreeWidgetItem, needle: str) -> bool:
         kind = node.data(0, _NODE_KIND_ROLE)
@@ -220,18 +302,137 @@ class SensorPicker(QWidget):
             if self._filter_branch(child, needle):
                 any_visible = True
         if kind == _NODE_TOOL and not needle:
-            return True  # show empty tool nodes when no filter is active
+            return True
         node.setHidden(not any_visible)
         return any_visible
 
     def _matches_sensor(self, leaf: QTreeWidgetItem, needle: str) -> bool:
-        text = leaf.text(0).casefold()
-        if needle in text:
-            return True
-        tool_id = str(leaf.data(0, _TOOL_ROLE) or "")
-        if needle in tool_id.casefold():
-            return True
-        return False
+        haystacks = [
+            leaf.text(0),
+            str(leaf.data(0, _TOOL_ROLE) or ""),
+            str(leaf.data(0, _SENSOR_ROLE) or ""),
+            str(leaf.data(0, _UNITS_ROLE) or ""),
+            str(leaf.data(0, _DESCRIPTION_ROLE) or ""),
+        ]
+        return any(needle in h.casefold() for h in haystacks)
+
+    def _rebuild_results(self, needle: str) -> None:
+        """C3.4: flat results list grouped by tool, with breadcrumb labels."""
+        self._results_list.clear()
+        if not needle:
+            self._results_label.setVisible(False)
+            self._results_list.setVisible(False)
+            return
+
+        for tool_idx in range(self._tree.topLevelItemCount()):
+            tool_item = self._tree.topLevelItem(tool_idx)
+            if tool_item is None or tool_item.isHidden():
+                continue
+            for cat_idx in range(tool_item.childCount()):
+                cat = tool_item.child(cat_idx)
+                if cat is None or cat.isHidden():
+                    continue
+                for leaf_idx in range(cat.childCount()):
+                    leaf = cat.child(leaf_idx)
+                    if leaf is None or leaf.isHidden():
+                        continue
+                    tool_id = str(leaf.data(0, _TOOL_ROLE) or "")
+                    sensor = str(leaf.data(0, _SENSOR_ROLE) or "")
+                    breadcrumb = f"{tool_id}  /  {cat.text(0)}  /  {leaf.text(0)}"
+                    item = QListWidgetItem(breadcrumb)
+                    item.setData(_TOOL_ROLE, tool_id)
+                    item.setData(_SENSOR_ROLE, sensor)
+                    self._results_list.addItem(item)
+
+        count = self._results_list.count()
+        self._results_label.setText(f"Results ({count})")
+        self._results_label.setVisible(True)
+        self._results_list.setVisible(True)
+
+    def _on_result_clicked(self, item: QListWidgetItem) -> None:
+        tool_id = str(item.data(_TOOL_ROLE) or "")
+        sensor = str(item.data(_SENSOR_ROLE) or "")
+        leaf = self._find_leaf(tool_id, sensor)
+        if leaf is None:
+            return
+        new_state = (
+            Qt.CheckState.Unchecked
+            if leaf.checkState(0) == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+        leaf.setCheckState(0, new_state)
+
+    def _find_leaf(self, tool_id: str, sensor: str) -> QTreeWidgetItem | None:
+        for tool_idx in range(self._tree.topLevelItemCount()):
+            tool_item = self._tree.topLevelItem(tool_idx)
+            if tool_item is None:
+                continue
+            if str(tool_item.data(0, _TOOL_ROLE) or "") != tool_id:
+                continue
+            for cat_idx in range(tool_item.childCount()):
+                cat = tool_item.child(cat_idx)
+                if cat is None:
+                    continue
+                for leaf_idx in range(cat.childCount()):
+                    leaf = cat.child(leaf_idx)
+                    if leaf is None:
+                        continue
+                    if str(leaf.data(0, _SENSOR_ROLE) or "") == sensor:
+                        return leaf
+        return None
+
+    # --- Detail pane (C3.5) ---------------------------------------------
+
+    def _on_item_hovered(self, item: QTreeWidgetItem, _column: int) -> None:
+        if item.data(0, _NODE_KIND_ROLE) != _NODE_SENSOR:
+            return
+        tool_id = str(item.data(0, _TOOL_ROLE) or "")
+        sensor = str(item.data(0, _SENSOR_ROLE) or "")
+        description = str(item.data(0, _DESCRIPTION_ROLE) or "")
+        units = str(item.data(0, _UNITS_ROLE) or "")
+        self._show_detail(tool_id, sensor, description, units)
+
+    def _on_result_hovered(self, item: QListWidgetItem) -> None:
+        tool_id = str(item.data(_TOOL_ROLE) or "")
+        sensor = str(item.data(_SENSOR_ROLE) or "")
+        leaf = self._find_leaf(tool_id, sensor)
+        if leaf is None:
+            return
+        description = str(leaf.data(0, _DESCRIPTION_ROLE) or "")
+        units = str(leaf.data(0, _UNITS_ROLE) or "")
+        self._show_detail(tool_id, sensor, description, units)
+
+    def _show_detail(
+        self,
+        tool_id: str,
+        sensor: str,
+        description: str,
+        units: str,
+    ) -> None:
+        self._detail_name.setStyleSheet("")
+        self._detail_name.setText(f"{sensor}  —  {tool_id}")
+        self._detail_description.setText(description or "(no description)")
+        self._detail_units.setText(f"Units: {units or '—'}")
+        files = [f for f in self._library.all_files() if f.tool_id == tool_id and not f.archived]
+        self._detail_files.setText(f"Local files: {len(files)}")
+        if files:
+            extent = TimeRange(
+                start=min(f.min_ts for f in files),
+                end=max(f.max_ts for f in files),
+            )
+            self._detail_range.setText(
+                f"Local range: {extent.start.isoformat()}  →  {extent.end.isoformat()}"
+            )
+        else:
+            self._detail_range.setText("Local range: (no local data)")
+
+    def _show_detail_empty(self) -> None:
+        self._detail_name.setStyleSheet("color: gray;")
+        self._detail_name.setText(_DETAIL_EMPTY)
+        self._detail_description.setText("")
+        self._detail_units.setText("")
+        self._detail_files.setText("")
+        self._detail_range.setText("")
 
     # --- Selection sync --------------------------------------------------
 
@@ -336,7 +537,6 @@ class SensorPicker(QWidget):
         finally:
             self._tree.blockSignals(False)
 
-        # Recompute counts based on the synced state.
         self._refresh_counts()
 
     def _sync_branch(
