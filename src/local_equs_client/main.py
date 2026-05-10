@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from local_equs_client.config import logging as app_logging
 from local_equs_client.config import settings as settings_module
+from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
@@ -54,9 +55,11 @@ def main() -> None:
     settings = settings_module.get_settings()
     http_client: HttpClient | None = None
     update_manager: UpdateManager | None = None
+    download_manager: DownloadManager | None = None
     if settings.server_url:
         http_client = HttpClient(settings.server_url, cid)
-        update_manager = UpdateManager(http_client, conn)
+        update_manager = UpdateManager(http_client, conn, library=library)
+        download_manager = DownloadManager(http_client, library)
 
     metadata_cache = MetadataCache(library, conn=conn, http=http_client)
 
@@ -67,6 +70,7 @@ def main() -> None:
         metadata_cache,
         controller,
         update_manager=update_manager,
+        download_manager=download_manager,
     )
     window.show()
     sys.exit(app.exec())
