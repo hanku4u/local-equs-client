@@ -82,6 +82,8 @@ class MetadataCache:
         self._memo_categories: list[Category] | None = None
         # (tool_id, canonical_name) -> raw_name. Lazily rebuilt from cache.
         self._memo_mapping: dict[tuple[str, str], str] | None = None
+        # tool_id -> prc_group_id, derived from cached mappings.
+        self._memo_tool_pg: dict[str, str] | None = None
 
     # --- C2.9 raw sensor catalog -----------------------------------------
 
@@ -134,6 +136,7 @@ class MetadataCache:
         self._memo_canonical.clear()
         self._memo_categories = None
         self._memo_mapping = None
+        self._memo_tool_pg = None
 
     # --- C3.1 canonical sensors ------------------------------------------
 
@@ -207,6 +210,14 @@ class MetadataCache:
         index = self._mapping_index()
         return index.get((tool_id, canonical_name))
 
+    def prc_group_for(self, tool_id: str) -> str | None:
+        """Return the prc_group id this tool belongs to, from cached mappings."""
+        return self._tool_to_pg().get(tool_id)
+
+    def prc_groups(self) -> list[str]:
+        """Return every prc_group id we have cached mappings for."""
+        return sorted(set(self._tool_to_pg().values()))
+
     def refresh_mappings(self, prc_group_id: str) -> Any:
         """Refresh the per-prc-group mappings payload. Returns the parsed body."""
         if self._http is None or self._conn is None:
@@ -225,6 +236,7 @@ class MetadataCache:
             result = payload
 
         self._memo_mapping = None  # rebuild on next read
+        self._memo_tool_pg = None
         return result
 
     # --- Conditional GET helper ------------------------------------------
@@ -282,6 +294,31 @@ class MetadataCache:
                 index[(tool_id, canonical)] = raw
         self._memo_mapping = index
         return index
+
+    def _tool_to_pg(self) -> dict[str, str]:
+        if self._memo_tool_pg is not None:
+            return self._memo_tool_pg
+        if self._conn is None:
+            self._memo_tool_pg = {}
+            return self._memo_tool_pg
+        out: dict[str, str] = {}
+        for payload in metadata_dao.all_mapping_payloads(self._conn):
+            if not isinstance(payload, dict):
+                continue
+            prc_group = payload.get("prc_group_id")
+            if not isinstance(prc_group, str):
+                continue
+            entries = payload.get("mappings", [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                tool_id = entry.get("tool_id")
+                if isinstance(tool_id, str):
+                    out.setdefault(tool_id, prc_group)
+        self._memo_tool_pg = out
+        return out
 
 
 # Sentinel for "use the cached payload as-is" — distinct from None which means

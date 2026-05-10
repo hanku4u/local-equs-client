@@ -168,10 +168,17 @@ class MainWindow(QMainWindow):
     def _rescan(self) -> None:
         count = self._library.scan()
         self._cache.invalidate()
-        # Refresh server-side sensor catalog for each tool; falls back to cache
-        # / parquet schema when offline.
+
+        # M3: refresh canonical metadata first so the picker tree has something to render.
+        self._cache.refresh_categories()
+        for prc_group in self._cache.prc_groups():
+            self._cache.refresh_canonical_sensors(prc_group)
+            self._cache.refresh_mappings(prc_group)
+
+        # Per-tool raw sensor catalog (C2.9). Falls back to cache / parquet schema offline.
         for tool_id in sorted({f.tool_id for f in self._library.all_files() if not f.archived}):
             self._cache.refresh_sensors(tool_id)
+
         self._picker.refresh()
         self._time_range.refresh_extent()
         self._controller.trigger()
