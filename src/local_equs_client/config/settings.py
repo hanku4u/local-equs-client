@@ -63,3 +63,26 @@ def reset_settings() -> None:
     global _instance
     with _lock:
         _instance = None
+
+
+def save(new_settings: Settings) -> None:
+    """Atomically persist ``new_settings`` to ``config.toml`` and update the singleton."""
+    global _instance
+    config_path = paths.config_file()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    tmp.write_text(_to_toml(new_settings), encoding="utf-8")
+    tmp.replace(config_path)
+
+    with _lock:
+        _instance = new_settings
+
+
+def _to_toml(s: Settings) -> str:
+    return f"data_dir = {_toml_string(str(s.data_dir))}\n"
+
+
+def _toml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'

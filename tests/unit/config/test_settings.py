@@ -62,3 +62,27 @@ def test_expands_user_home_in_data_dir(
 
     s = settings.get_settings()
     assert s.data_dir == home / "equs-data"
+
+
+def test_save_writes_config_and_updates_singleton(_isolated_app_dir: Path) -> None:
+    custom = _isolated_app_dir / "saved-data"
+    settings.save(settings.Settings(data_dir=custom))
+
+    assert paths.config_file().read_text(encoding="utf-8").strip() == f'data_dir = "{custom}"'
+    assert settings.get_settings().data_dir == custom
+
+
+def test_save_round_trips_through_get_settings(_isolated_app_dir: Path) -> None:
+    custom = _isolated_app_dir / "round-trip"
+    settings.save(settings.Settings(data_dir=custom))
+    settings.reset_settings()
+
+    assert settings.get_settings().data_dir == custom
+
+
+def test_save_escapes_backslashes_in_path(_isolated_app_dir: Path) -> None:
+    weird = Path("C:\\Users\\equs\\data")
+    settings.save(settings.Settings(data_dir=weird))
+    settings.reset_settings()
+
+    assert settings.get_settings().data_dir == weird
