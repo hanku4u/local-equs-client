@@ -1,1 +1,123 @@
-﻿"""Glue between SelectionModel and the query pipeline (C1.9, C5.13)."""
+"""Glue between SelectionModel and the query pipeline (C1.9, C5.13).
+
+Subscribes to :attr:`SelectionModel.selectionChanged`, debounces 180ms, asks the
+:class:`QueryPlanner` for a plan, dispatches the plan through a
+:class:`QueryEngine` on a background thread, and emits the result as
+``queryCompleted(plan, results)`` or ``queryFailed(exception)``.
+
+A new selection while a query is in flight cancels the prior job — the
+controller only ever emits ``queryCompleted`` for the latest dispatch.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from PySide6.QtCore import QObject, QTimer, Signal
+
+from local_equs_client.data_layer.query_engine import QueryCancelled, QueryEngine
+from local_equs_client.data_layer.query_planner import QueryPlan, QueryPlanner
+from local_equs_client.data_layer.threading import BackgroundJob, JobRunner
+from local_equs_client.selection.selection_model import SelectionModel
+from local_equs_client.selection.types import ViewMode
+
+
+class _QueryJob(BackgroundJob):
+    """BackgroundJob that runs ``QueryEngine.execute`` for one plan."""
+
+    def __init__(self, engine: QueryEngine, plan: QueryPlan) -> None:
+        super().__init__()
+        self._engine = engine
+        self._plan = plan
+
+    def run(self) -> Any:
+        return self._engine.execute(self._plan, cancelled=self._is_cancelled)
+
+    def _is_cancelled(self) -> bool:
+        return self.cancelled
+
+
+class QueryController(QObject):
+    """Routes selection changes through planner + engine and emits results."""
+
+    queryCompleted = Signal(object, object)  # (QueryPlan, dict[str, pyarrow.Table])
+    queryFailed = Signal(object)  # exception
+
+    DEBOUNCE_MS = 180
+    DEFAULT_VIEWPORT_WIDTH = 1920
+
+    def __init__(
+        self,
+        selection_model: SelectionModel,
+        planner: QueryPlanner,
+        engine: QueryEngine,
+        runner: JobRunner | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._model = selection_model
+        self._planner = planner
+        self._engine = engine
+        self._runner = runner or JobRunner()
+
+        self._mode: ViewMode = "standard"
+        self._viewport_width = self.DEFAULT_VIEWPORT_WIDTH
+
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(self.DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._dispatch)
+
+        self._current_job: _QueryJob | None = None
+
+        self._model.selectionChanged.connect(self._debounce.start)
+
+    # --- Public surface ---------------------------------------------------
+
+    def trigger(self) -> None:
+        """Run a query for the current selection without waiting for the debounce."""
+        self._debounce.stop()
+        self._dispatch()
+
+    def set_mode(self, mode: ViewMode) -> None:
+        self._mode = mode
+
+    def set_viewport_width(self, width_px: int) -> None:
+        self._viewport_width = max(1, width_px)
+
+    # --- Internals --------------------------------------------------------
+
+    def _dispatch(self) -> None:
+        if self._current_job is not None:
+            self._current_job.request_cancel()
+            self._current_job = None
+
+        snapshot = self._model.snapshot()
+        plan = self._planner.plan(snapshot, self._mode, self._viewport_width)
+
+        job = _QueryJob(self._engine, plan)
+        captured_plan = plan
+        captured_job = job
+
+        def _on_finished(result: object) -> None:
+            if captured_job is not self._current_job:
+                return
+            self._current_job = None
+            self.queryCompleted.emit(captured_plan, result)
+
+        def _on_failed(exc: object) -> None:
+            if captured_job is not self._current_job:
+                return
+            self._current_job = None
+            if isinstance(exc, QueryCancelled):
+                return
+            self.queryFailed.emit(exc)
+
+        job.finished.connect(_on_finished)
+        job.failed.connect(_on_failed)
+
+        self._current_job = job
+        self._runner.submit(job)
+
+
+__all__ = ["QueryController"]
