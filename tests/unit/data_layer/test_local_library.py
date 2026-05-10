@@ -205,3 +205,27 @@ def test_scan_is_idempotent(data_dir: Path, conn) -> None:
 
     assert first == second == 1
     assert len(library.all_files()) == 1
+
+
+def test_delete_removes_file_and_row(data_dir: Path, conn) -> None:
+    parquet = data_dir / "etch_a1.parquet"
+    _make_parquet(parquet, datetime(2026, 1, 1, tzinfo=UTC))
+    library = LocalLibrary(data_dir, conn)
+    library.scan()
+
+    library.delete("etch_a1.parquet")
+
+    assert not parquet.exists()
+    assert library.all_files() == []
+
+
+def test_delete_drops_row_when_file_already_gone(data_dir: Path, conn) -> None:
+    parquet = data_dir / "etch_a1.parquet"
+    _make_parquet(parquet, datetime(2026, 1, 1, tzinfo=UTC))
+    library = LocalLibrary(data_dir, conn)
+    library.scan()
+    parquet.unlink()  # file gone but DB row still present until next scan
+
+    library.delete("etch_a1.parquet")
+
+    assert library.all_files() == []
