@@ -26,6 +26,7 @@ from datetime import timedelta
 import duckdb
 import pyarrow as pa
 
+from local_equs_client.data_layer.query_cache import CacheKey, QueryCache
 from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery
 
 _POLL_INTERVAL_S = 0.05
@@ -54,6 +55,9 @@ type ToolResult = pa.Table | QueryError
 class QueryEngine:
     """Executes a :class:`QueryPlan` and returns one result per tool."""
 
+    def __init__(self, cache: QueryCache | None = None) -> None:
+        self._cache = cache
+
     def execute(
         self,
         plan: QueryPlan,
@@ -67,6 +71,16 @@ class QueryEngine:
         results: dict[str, ToolResult] = {}
 
         def run_one(tool_query: ToolQuery) -> tuple[str, ToolResult]:
+            cache_key = (
+                CacheKey.from_tool_query(tool_query, plan.target_resolution)
+                if self._cache is not None and tool_query.raw_columns
+                else None
+            )
+            if cache_key is not None:
+                cached = self._cache.get(cache_key) if self._cache is not None else None
+                if cached is not None:
+                    return tool_query.tool_id, cached
+
             conn = duckdb.connect(":memory:")
             active_connections[tool_query.tool_id] = conn
             try:
@@ -74,6 +88,8 @@ class QueryEngine:
                 if not sql:
                     return tool_query.tool_id, pa.table({})
                 table = conn.execute(sql).to_arrow_table()
+                if self._cache is not None and cache_key is not None:
+                    self._cache.put(cache_key, table)
                 return tool_query.tool_id, table
             except Exception as exc:  # noqa: BLE001 — boundary capture by design
                 logger.warning(

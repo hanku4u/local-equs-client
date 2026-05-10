@@ -13,11 +13,13 @@ from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
+from local_equs_client.data_layer.query_cache import QueryCache
 from local_equs_client.data_layer.query_controller import QueryController
 from local_equs_client.data_layer.query_engine import QueryEngine
 from local_equs_client.data_layer.query_planner import QueryPlanner
 from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
+from local_equs_client.selection.view_controller import ViewController
 from local_equs_client.state import db
 from local_equs_client.state.dao import identity
 from local_equs_client.ui.main_window import MainWindow
@@ -43,7 +45,9 @@ def main() -> None:
     logger.info("Local Library scan: %d parquet files indexed", indexed)
 
     selection_model = SelectionModel()
-    engine = QueryEngine()
+    view_controller = ViewController()
+    query_cache = QueryCache()
+    engine = QueryEngine(cache=query_cache)
 
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -62,7 +66,12 @@ def main() -> None:
     metadata_cache = MetadataCache(library, conn=conn, http=http_client)
     planner = QueryPlanner(library, metadata_cache=metadata_cache)
 
-    controller = QueryController(selection_model, planner, engine)
+    controller = QueryController(
+        selection_model,
+        planner,
+        engine,
+        view_controller=view_controller,
+    )
     window = MainWindow(
         selection_model,
         library,
