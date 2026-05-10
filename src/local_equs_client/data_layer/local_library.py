@@ -125,6 +125,30 @@ class LocalLibrary:
         dao.delete(self._conn, file_id)
         self._conn.commit()
 
+    def index_file(self, file_id: str) -> LocalFile | None:
+        """Index one file by its relative path. Returns the new row or None on failure."""
+        from local_equs_client.state.dao import local_files as dao
+
+        path = self._data_dir / file_id
+        if not path.exists():
+            return None
+        try:
+            local_file = self._read_file_metadata(path)
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to index %s: %s", path, exc)
+            return None
+        dao.upsert(self._conn, local_file)
+        self._conn.commit()
+        return local_file
+
+    def set_sha256(self, file_id: str, sha256: str | None) -> None:
+        """Update the stored SHA-256 for a file (downloaders stamp it post-verify)."""
+        self._conn.execute(
+            "UPDATE local_files SET sha256 = ? WHERE file_id = ?",
+            (sha256, file_id),
+        )
+        self._conn.commit()
+
     def _iter_parquet(self) -> Iterator[Path]:
         if not self._data_dir.is_dir():
             return
