@@ -9,11 +9,13 @@ from PySide6.QtWidgets import QApplication
 
 from local_equs_client.config import logging as app_logging
 from local_equs_client.config import settings as settings_module
+from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
 from local_equs_client.data_layer.query_engine import QueryEngine
 from local_equs_client.data_layer.query_planner import QueryPlanner
+from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.state import db
 from local_equs_client.state.dao import identity
@@ -40,7 +42,6 @@ def main() -> None:
     logger.info("Local Library scan: %d parquet files indexed", indexed)
 
     selection_model = SelectionModel()
-    metadata_cache = MetadataCache(library)
 
     planner = QueryPlanner(library)
     engine = QueryEngine()
@@ -50,7 +51,22 @@ def main() -> None:
     if settings_module.get_settings().server_url is None:
         FirstRunWizard().exec()
 
+    settings = settings_module.get_settings()
+    http_client: HttpClient | None = None
+    update_manager: UpdateManager | None = None
+    if settings.server_url:
+        http_client = HttpClient(settings.server_url, cid)
+        update_manager = UpdateManager(http_client, conn)
+
+    metadata_cache = MetadataCache(library, conn=conn, http=http_client)
+
     controller = QueryController(selection_model, planner, engine)
-    window = MainWindow(selection_model, library, metadata_cache, controller)
+    window = MainWindow(
+        selection_model,
+        library,
+        metadata_cache,
+        controller,
+        update_manager=update_manager,
+    )
     window.show()
     sys.exit(app.exec())

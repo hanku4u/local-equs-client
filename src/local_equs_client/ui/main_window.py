@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
+from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.ui.chart_grid import ChartGrid
 from local_equs_client.ui.local_library_panel import LocalLibraryPanel
@@ -48,12 +49,14 @@ class MainWindow(QMainWindow):
         library: LocalLibrary,
         metadata_cache: MetadataCache,
         query_controller: QueryController,
+        update_manager: UpdateManager | None = None,
     ) -> None:
         super().__init__()
         self._model = selection_model
         self._library = library
         self._cache = metadata_cache
         self._controller = query_controller
+        self._update_manager = update_manager
         self._qsettings = QSettings("LocalEQUS", "Client")
 
         self.setWindowTitle("Local EQUS")
@@ -140,6 +143,10 @@ class MainWindow(QMainWindow):
     def _rescan(self) -> None:
         count = self._library.scan()
         self._cache.invalidate()
+        # Refresh server-side sensor catalog for each tool; falls back to cache
+        # / parquet schema when offline.
+        for tool_id in sorted({f.tool_id for f in self._library.all_files() if not f.archived}):
+            self._cache.refresh_sensors(tool_id)
         self._picker.refresh()
         self._time_range.refresh_extent()
         self._controller.trigger()
