@@ -92,6 +92,9 @@ class MainWindow(QMainWindow):
     def _wire_query_pipeline(self) -> None:
         self._controller.queryCompleted.connect(self._chart_grid.update_from_results)
         self._controller.queryFailed.connect(self._on_query_failed)
+        # Pan/zoom on the charts updates the model's time_range; the controller
+        # then debounces and re-queries at the new resolution.
+        self._chart_grid.rangeChangedByUser.connect(self._model.set_time_range)
 
     def _on_query_failed(self, exc: object) -> None:
         logger.warning("Query failed: %s", exc)

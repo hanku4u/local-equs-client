@@ -1,9 +1,14 @@
-"""Executes QueryPlans against DuckDB with cancellation support (C1.8, C5.2).
+"""Executes QueryPlans against DuckDB with cancellation support (C1.8, C1.12, C5.2).
 
 Each ``ToolQuery`` runs in its own thread against a fresh in-process DuckDB
 connection. Per-tool aggregation is ``time_bucket()`` + ``avg/min/max`` over the
 selected raw columns. Results are returned as ``pyarrow.Table`` so consumers
 can zero-copy to numpy.
+
+C1.12 adds per-tool error isolation: a failure on one tool comes back as a
+:class:`QueryError` for that tool while every other tool's table flows through
+normally. ``QueryCancelled`` is the one exception that still propagates — that
+signals "stop the whole query," not "this tool failed."
 
 Cancellation is cooperative: pass a ``cancelled()`` callable. When it returns
 ``True`` between completed queries, in-flight DuckDB connections are
@@ -12,8 +17,10 @@ interrupted and :class:`QueryCancelled` is raised.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import timedelta
 
 import duckdb
@@ -24,27 +31,42 @@ from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery
 _POLL_INTERVAL_S = 0.05
 _MAX_WORKERS = 4
 
+logger = logging.getLogger(__name__)
+
 
 class QueryCancelled(Exception):
     """Raised by :meth:`QueryEngine.execute` when ``cancelled()`` returns True."""
 
 
+@dataclass(frozen=True, slots=True)
+class QueryError:
+    """One tool's query failed. Other tools' results still come back."""
+
+    tool_id: str
+    message: str
+
+
+# Result type for one tool. ``QueryError`` reports a localized failure
+# (corrupt parquet, schema mismatch, …) without aborting the whole plan.
+type ToolResult = pa.Table | QueryError
+
+
 class QueryEngine:
-    """Executes a :class:`QueryPlan` and returns one Arrow table per tool."""
+    """Executes a :class:`QueryPlan` and returns one result per tool."""
 
     def execute(
         self,
         plan: QueryPlan,
         cancelled: Callable[[], bool] | None = None,
-    ) -> dict[str, pa.Table]:
+    ) -> dict[str, ToolResult]:
         if not plan.per_tool_queries:
             return {}
 
         is_cancelled = cancelled or (lambda: False)
         active_connections: dict[str, duckdb.DuckDBPyConnection] = {}
-        results: dict[str, pa.Table] = {}
+        results: dict[str, ToolResult] = {}
 
-        def run_one(tool_query: ToolQuery) -> tuple[str, pa.Table]:
+        def run_one(tool_query: ToolQuery) -> tuple[str, ToolResult]:
             conn = duckdb.connect(":memory:")
             active_connections[tool_query.tool_id] = conn
             try:
@@ -53,16 +75,23 @@ class QueryEngine:
                     return tool_query.tool_id, pa.table({})
                 table = conn.execute(sql).to_arrow_table()
                 return tool_query.tool_id, table
+            except Exception as exc:  # noqa: BLE001 — boundary capture by design
+                logger.warning(
+                    "Tool %s query failed: %s", tool_query.tool_id, exc, exc_info=True
+                )
+                return tool_query.tool_id, QueryError(
+                    tool_id=tool_query.tool_id, message=str(exc)
+                )
             finally:
                 conn.close()
                 active_connections.pop(tool_query.tool_id, None)
 
         max_workers = min(len(plan.per_tool_queries), _MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures: dict[Future[tuple[str, pa.Table]], ToolQuery] = {
+            futures: dict[Future[tuple[str, ToolResult]], ToolQuery] = {
                 pool.submit(run_one, q): q for q in plan.per_tool_queries
             }
-            pending: set[Future[tuple[str, pa.Table]]] = set(futures)
+            pending: set[Future[tuple[str, ToolResult]]] = set(futures)
 
             while pending:
                 if is_cancelled():
@@ -79,8 +108,8 @@ class QueryEngine:
                     pending, timeout=_POLL_INTERVAL_S, return_when=FIRST_COMPLETED
                 )
                 for fut in done:
-                    tool_id, table = fut.result()
-                    results[tool_id] = table
+                    tool_id, result = fut.result()
+                    results[tool_id] = result
 
         return results
 
@@ -136,4 +165,4 @@ def _quote_ident(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-__all__ = ["QueryCancelled", "QueryEngine"]
+__all__ = ["QueryCancelled", "QueryEngine", "QueryError", "ToolResult"]
