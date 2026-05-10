@@ -43,8 +43,6 @@ def main() -> None:
     logger.info("Local Library scan: %d parquet files indexed", indexed)
 
     selection_model = SelectionModel()
-
-    planner = QueryPlanner(library)
     engine = QueryEngine()
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -62,6 +60,7 @@ def main() -> None:
         download_manager = DownloadManager(http_client, library)
 
     metadata_cache = MetadataCache(library, conn=conn, http=http_client)
+    planner = QueryPlanner(library, metadata_cache=metadata_cache)
 
     controller = QueryController(selection_model, planner, engine)
     window = MainWindow(
