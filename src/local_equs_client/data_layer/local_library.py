@@ -115,6 +115,16 @@ class LocalLibrary:
 
         return dao.all_files(self._conn, self._data_dir)
 
+    def delete(self, file_id: str) -> None:
+        """Remove the on-disk file (if present) and drop the index row."""
+        from local_equs_client.state.dao import local_files as dao
+
+        path = self._data_dir / file_id
+        if path.exists():
+            path.unlink()
+        dao.delete(self._conn, file_id)
+        self._conn.commit()
+
     def _iter_parquet(self) -> Iterator[Path]:
         if not self._data_dir.is_dir():
             return

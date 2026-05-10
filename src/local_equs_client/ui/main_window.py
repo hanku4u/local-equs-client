@@ -27,6 +27,7 @@ from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.ui.chart_grid import ChartGrid
+from local_equs_client.ui.local_library_panel import LocalLibraryPanel
 from local_equs_client.ui.sensor_picker import SensorPicker
 from local_equs_client.ui.settings_panel import SettingsPanel
 from local_equs_client.ui.time_range_selector import TimeRangeSelector
@@ -119,6 +120,9 @@ class MainWindow(QMainWindow):
         rescan_action = QAction("&Rescan local data", self)
         rescan_action.triggered.connect(self._rescan)
         view_menu.addAction(rescan_action)
+        library_action = QAction("&Local Library…", self)
+        library_action.triggered.connect(self._open_local_library)
+        view_menu.addAction(library_action)
 
         help_menu = bar.addMenu("&Help")
         about_action = QAction("&About", self)
@@ -129,6 +133,9 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         SettingsPanel(self).exec()
+
+    def _open_local_library(self) -> None:
+        LocalLibraryPanel(self._library, self).exec()
 
     def _rescan(self) -> None:
         count = self._library.scan()
