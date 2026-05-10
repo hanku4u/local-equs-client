@@ -19,6 +19,7 @@ def _isolated_app_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 def _toml_string(value: str) -> str:
+    """Return a TOML-safe quoted string for paths, including Windows separators."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
