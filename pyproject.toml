@@ -71,6 +71,10 @@ strict = false
 module = ["pyqtgraph", "pyqtgraph.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["requests", "requests.*", "responses"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
