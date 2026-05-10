@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pyqtgraph as pg
-from PySide6.QtCore import QDateTime, Qt, QTimer, QTimeZone, Signal
+from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, QTimeZone, Signal
 from PySide6.QtWidgets import (
     QDateTimeEdit,
     QHBoxLayout,
@@ -27,7 +27,11 @@ from local_equs_client.selection.types import TimeRange
 
 _DEBOUNCE_MS = 200
 _DISPLAY_FORMAT = "yyyy-MM-dd HH:mm:ss"
-_UTC = QTimeZone.utc()
+
+
+def _utc_zone() -> QTimeZone:
+    """Build a fresh UTC zone every time. Cheap, dodges any module-level init order."""
+    return QTimeZone(QTimeZone.Initialization.UTC)
 
 
 class TimeRangeSelector(QWidget):
@@ -94,7 +98,7 @@ class TimeRangeSelector(QWidget):
         edit = QDateTimeEdit()
         edit.setDisplayFormat(_DISPLAY_FORMAT)
         edit.setCalendarPopup(True)
-        edit.setTimeSpec(Qt.TimeSpec.UTC)
+        edit.setTimeZone(_utc_zone())
         return edit
 
     def _wire_inputs(self) -> None:
@@ -169,7 +173,13 @@ class TimeRangeSelector(QWidget):
 
 
 def _qdt_from_dt(value: datetime) -> QDateTime:
-    return QDateTime.fromSecsSinceEpoch(int(value.timestamp()), _UTC)
+    """Build a UTC QDateTime explicitly from a Python datetime (millisecond precision)."""
+    utc = value.astimezone(UTC)
+    return QDateTime(
+        QDate(utc.year, utc.month, utc.day),
+        QTime(utc.hour, utc.minute, utc.second, utc.microsecond // 1000),
+        _utc_zone(),
+    )
 
 
 def _dt_from_qdt(value: QDateTime) -> datetime:
@@ -177,7 +187,8 @@ def _dt_from_qdt(value: QDateTime) -> datetime:
 
 
 def _dt_from_epoch(value: float) -> QDateTime:
-    return QDateTime.fromSecsSinceEpoch(int(value), _UTC)
+    """Build a UTC QDateTime from a unix epoch second."""
+    return _qdt_from_dt(datetime.fromtimestamp(int(value), tz=UTC))
 
 
 __all__ = ["TimeRangeSelector"]
