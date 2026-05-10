@@ -30,6 +30,7 @@ from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.ui.chart_grid import ChartGrid
 from local_equs_client.ui.local_library_panel import LocalLibraryPanel
+from local_equs_client.ui.mapping_editor import MappingEditor
 from local_equs_client.ui.sensor_picker import SensorPicker
 from local_equs_client.ui.settings_panel import SettingsPanel
 from local_equs_client.ui.time_range_selector import TimeRangeSelector
@@ -136,6 +137,9 @@ class MainWindow(QMainWindow):
             self._update_manager is not None and self._download_manager is not None
         )
         view_menu.addAction(updates_action)
+        mapping_action = QAction("&Mapping Editor…", self)
+        mapping_action.triggered.connect(self._open_mapping_editor)
+        view_menu.addAction(mapping_action)
 
         help_menu = bar.addMenu("&Help")
         about_action = QAction("&About", self)
@@ -149,6 +153,9 @@ class MainWindow(QMainWindow):
 
     def _open_local_library(self) -> None:
         LocalLibraryPanel(self._library, self).exec()
+
+    def _open_mapping_editor(self) -> None:
+        MappingEditor(self._cache, self).exec()
 
     def _open_updates(self) -> None:
         if self._update_manager is None or self._download_manager is None:
