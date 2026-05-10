@@ -138,7 +138,11 @@ class TimeRangeSelector(QWidget):
     def _on_input_changed(self) -> None:
         if self._suppress_push:
             return
-        self._sync_region_from_inputs()
+        self._suppress_push = True
+        try:
+            self._sync_region_from_inputs()
+        finally:
+            self._suppress_push = False
         self._debounce.start()
 
     def _on_region_changed(self) -> None:
