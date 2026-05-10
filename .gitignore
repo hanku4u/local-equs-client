@@ -59,3 +59,6 @@ config.toml
 # Spike output (see spike/README.md)
 spike/results.md
 spike/data/
+
+# dummy data files for testing
+/dummy_data
