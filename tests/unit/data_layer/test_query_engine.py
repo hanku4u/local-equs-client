@@ -229,6 +229,40 @@ def test_no_files_returns_empty_table(tmp_path: Path) -> None:
     assert table.num_columns == 0
 
 
+def test_per_tool_error_isolated(tmp_path: Path) -> None:
+    """A bad path for one tool yields QueryError; the other tool's table flows through."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    good = tmp_path / "good.parquet"
+    _write_parquet(good, start=start, n_rows=120)
+    bogus = tmp_path / "missing.parquet"  # never created → bad path
+
+    plan = _make_plan(
+        queries=[
+            ToolQuery(
+                tool_id="good_tool",
+                file_paths=(good,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=12)),
+            ),
+            ToolQuery(
+                tool_id="bad_tool",
+                file_paths=(bogus,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=12)),
+            ),
+        ],
+    )
+
+    from local_equs_client.data_layer.query_engine import QueryError
+
+    results = QueryEngine().execute(plan)
+    assert set(results) == {"good_tool", "bad_tool"}
+    assert isinstance(results["good_tool"], pa.Table)
+    assert isinstance(results["bad_tool"], QueryError)
+    assert results["bad_tool"].tool_id == "bad_tool"
+    assert results["bad_tool"].message  # non-empty
+
+
 def test_cancellation_raises_query_cancelled(tmp_path: Path) -> None:
     """Cancellation polled before any future completes."""
     start = datetime(2026, 1, 1, tzinfo=UTC)
