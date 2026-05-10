@@ -37,15 +37,27 @@ class _StubPlanner:
 class _StubEngine:
     def __init__(self, *, raise_: Exception | None = None) -> None:
         self.calls: list[QueryPlan] = []
+        self.priorities: list[list[str] | None] = []
         self._raise = raise_
 
-    def execute(self, plan: QueryPlan, cancelled: Any = None) -> dict[str, Any]:
+    def execute(
+        self,
+        plan: QueryPlan,
+        cancelled: Any = None,
+        on_tool_complete: Any = None,
+        tool_priority: list[str] | None = None,
+    ) -> dict[str, Any]:
         self.calls.append(plan)
+        self.priorities.append(tool_priority)
         if cancelled is not None and cancelled():
             raise QueryCancelled()
         if self._raise is not None:
             raise self._raise
-        return {q.tool_id: object() for q in plan.per_tool_queries}
+        results = {q.tool_id: object() for q in plan.per_tool_queries}
+        if on_tool_complete is not None:
+            for tool_id, result in results.items():
+                on_tool_complete(tool_id, result)
+        return results
 
 
 class _SyncRunner:
@@ -177,3 +189,102 @@ def test_set_viewport_width_passes_through_to_planner() -> None:
 
     _selection, _mode, vw = planner.calls[-1]
     assert vw == 1024
+
+
+# --- C4.4: progressive emission ------------------------------------------
+
+
+def test_query_planned_fires_before_engine_runs() -> None:
+    controller, _model, _planner, _engine, runner = _make_controller()
+    planned: list[QueryPlan] = []
+    controller.queryPlanned.connect(lambda p: planned.append(p), Qt.DirectConnection)
+
+    controller.trigger()
+
+    # queryPlanned must fire on the dispatching thread, before the worker.
+    assert len(planned) == 1
+    # Engine hasn't been called yet — job is submitted but not run.
+    assert _engine.calls == []
+
+    _run_submitted(runner)
+    # Engine has been called now.
+    assert _engine.calls == [planned[0]]
+
+
+def test_tool_completed_emitted_per_tool() -> None:
+    from datetime import UTC, datetime, timedelta
+    from pathlib import Path
+
+    from local_equs_client.data_layer.query_planner import ToolQuery
+    from local_equs_client.selection.types import TimeRange
+
+    class _PlannerWithTools:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def plan(self, selection: Any, mode: Any, viewport_width: int) -> QueryPlan:
+            self.calls.append((selection, mode, viewport_width))
+            start = datetime(2026, 1, 1, tzinfo=UTC)
+            return QueryPlan(
+                per_tool_queries=[
+                    ToolQuery(
+                        tool_id="a",
+                        file_paths=(Path("a.parquet"),),
+                        raw_columns=("c",),
+                        time_range=TimeRange(start=start, end=start + timedelta(seconds=10)),
+                    ),
+                    ToolQuery(
+                        tool_id="b",
+                        file_paths=(Path("b.parquet"),),
+                        raw_columns=("c",),
+                        time_range=TimeRange(start=start, end=start + timedelta(seconds=10)),
+                    ),
+                ],
+                target_resolution=timedelta(seconds=1),
+                partial_data_warnings=[],
+            )
+
+    model = SelectionModel()
+    planner = _PlannerWithTools()
+    engine = _StubEngine()
+    runner = _SyncRunner()
+    controller = QueryController(model, planner, engine, runner=runner)
+
+    tool_events: list[tuple[str, object]] = []
+    controller.toolCompleted.connect(
+        lambda plan, tool_id, result: tool_events.append((tool_id, result)),
+        Qt.DirectConnection,
+    )
+
+    controller.trigger()
+    _run_submitted(runner)
+
+    tool_ids = {ev[0] for ev in tool_events}
+    assert tool_ids == {"a", "b"}
+
+
+def test_tool_completed_suppressed_for_stale_job() -> None:
+    controller, _model, _planner, _engine, runner = _make_controller()
+    tool_events: list[tuple[str, object]] = []
+    controller.toolCompleted.connect(
+        lambda plan, tool_id, result: tool_events.append((tool_id, result)),
+        Qt.DirectConnection,
+    )
+
+    controller.trigger()
+    controller.trigger()  # supersedes the first
+    _run_submitted(runner, index=0)  # stale
+
+    assert tool_events == []
+
+
+# --- C4.5: viewport priority hint ---------------------------------------
+
+
+def test_set_tool_priority_threaded_to_engine() -> None:
+    controller, _model, _planner, engine, runner = _make_controller()
+    controller.set_tool_priority(["b", "a"])
+    controller.trigger()
+    _run_submitted(runner)
+
+    assert engine.priorities[-1] == ["b", "a"]

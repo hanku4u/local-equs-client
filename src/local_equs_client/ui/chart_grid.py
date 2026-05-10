@@ -1,4 +1,4 @@
-"""PyQtGraph-based linked chart grid (C1.10, C1.11, C1.12, C1.13).
+"""PyQtGraph-based linked chart grid (C1.10, C1.11, C1.12, C1.13, C4.4, C4.6).
 
 One PlotItem per ``(tool_id, raw_column)`` pair. Avg drawn as a solid line,
 min/max as a faint fill band. All x-axes linked through the anchor plot and a
@@ -14,6 +14,17 @@ that tool shows a red error label instead of a curve.
 
 C1.13: when the result is empty (range outside local data, or column missing
 from every file in range), the plot shows "No data in range" centered.
+
+C4.4: ``on_plan_ready(plan)`` lays out empty placeholder frames the moment
+``QueryController.queryPlanned`` fires, so the grid never blanks before the
+first chart appears. ``on_tool_complete(plan, tool_id, result)`` fills that
+tool's frames as the engine yields each result. A progress label at the top
+reports ``Loading X / Y tools…`` until all results have landed.
+
+C4.6: when a plan asks for more than ``MAX_VISIBLE_PLOTS`` simultaneous
+charts the grid renders the first slice and shows a banner pointing the
+user at overview mode for the full set. Full virtualized scroll-recycle is
+deferred (the practical escape hatch is the sparkline grid in C4.7).
 """
 
 from __future__ import annotations
@@ -25,7 +36,7 @@ import numpy as np
 import pyarrow as pa
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from local_equs_client.data_layer.query_engine import QueryError, ToolResult
 from local_equs_client.data_layer.query_planner import QueryPlan
@@ -36,7 +47,12 @@ _LINE_COLOR = (80, 120, 200)
 _GRID_ALPHA = 0.3
 _PLOT_HEIGHT_HINT = 200
 _NO_DATA_TEXT = "No data in range"
+_LOADING_TEXT = "Loading…"
 _ERROR_PREFIX = "Tool error: "
+_BANNER_TEMPLATE = (
+    "Showing {shown} of {total} charts. Switch to overview mode for the full grid."
+)
+MAX_VISIBLE_PLOTS = 50  # C4.6 cap: practical ceiling for standard-mode rendering
 
 
 @dataclass(slots=True)
@@ -55,11 +71,27 @@ class ChartGrid(QWidget):
     """Linked grid of plots, one per (tool, raw sensor) pair."""
 
     rangeChangedByUser = Signal(object)  # emits a TimeRange
+    visibleToolsChanged = Signal(object)  # C4.5: list[str] of tool ids currently visible
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        self._progress_label = QLabel("")
+        self._progress_label.setVisible(False)
+        self._progress_label.setStyleSheet(
+            "color: rgb(180, 180, 180); padding: 4px 6px;"
+        )
+        layout.addWidget(self._progress_label)
+
+        self._cap_banner = QLabel("")
+        self._cap_banner.setVisible(False)
+        self._cap_banner.setStyleSheet(
+            "background-color: rgb(60, 50, 20); color: rgb(255, 220, 140);"
+            "padding: 6px 8px;"
+        )
+        layout.addWidget(self._cap_banner)
 
         self._graphics = pg.GraphicsLayoutWidget()
         layout.addWidget(self._graphics)
@@ -67,18 +99,61 @@ class ChartGrid(QWidget):
         self._plots: dict[tuple[str, str], _Plot] = {}
         self._anchor_plot: pg.PlotItem | None = None
         self._suppress_range_signal = False
+        self._pending_tools: set[str] = set()
+        self._planned_tools: set[str] = set()
 
         self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self._graphics.verticalScrollBar().valueChanged.connect(self._emit_visible_tools)
 
     # --- Public API -------------------------------------------------------
+
+    def on_plan_ready(self, plan: QueryPlan) -> None:
+        """C4.4: lay out empty placeholder frames the moment a plan is built."""
+        wanted = self._wanted_keys(plan)
+        wanted_set = set(wanted)
+
+        self._suppress_range_signal = True
+        try:
+            for key in list(self._plots):
+                if key not in wanted_set:
+                    self._remove_plot(key)
+            for key in wanted:
+                plot = self._upsert_plot(key, None)
+                self._show_loading(plot)
+
+            if plan.per_tool_queries and self._anchor_plot is not None:
+                tr = plan.per_tool_queries[0].time_range
+                self._anchor_plot.setXRange(
+                    tr.start.timestamp(), tr.end.timestamp(), padding=0
+                )
+        finally:
+            self._suppress_range_signal = False
+
+        self._planned_tools = {q.tool_id for q in plan.per_tool_queries}
+        self._pending_tools = set(self._planned_tools)
+        self._update_progress()
+        self._update_cap_banner(plan)
+        self._emit_visible_tools()
+
+    def on_tool_complete(
+        self, plan: QueryPlan, tool_id: str, result: ToolResult
+    ) -> None:
+        """C4.4: fill in the slot for one tool as its result arrives."""
+        for q in plan.per_tool_queries:
+            if q.tool_id != tool_id:
+                continue
+            for col in q.raw_columns:
+                key = (tool_id, col)
+                if key in self._plots:
+                    self._apply_data(self._plots[key], result, key)
+        self._pending_tools.discard(tool_id)
+        self._update_progress()
 
     def update_from_results(
         self, plan: QueryPlan, results: dict[str, ToolResult]
     ) -> None:
         """Apply a completed query plan + per-tool results to the grid."""
-        wanted: list[tuple[str, str]] = [
-            (q.tool_id, col) for q in plan.per_tool_queries for col in q.raw_columns
-        ]
+        wanted = self._wanted_keys(plan)
         wanted_set = set(wanted)
 
         self._suppress_range_signal = True
@@ -99,16 +174,87 @@ class ChartGrid(QWidget):
         finally:
             self._suppress_range_signal = False
 
+        # All results in hand — clear progress.
+        self._pending_tools.clear()
+        self._planned_tools = {q.tool_id for q in plan.per_tool_queries}
+        self._update_progress()
+        self._update_cap_banner(plan)
+
     def clear(self) -> None:
         for key in list(self._plots):
             self._remove_plot(key)
+        self._pending_tools.clear()
+        self._planned_tools.clear()
+        self._update_progress()
+        self._update_cap_banner(None)
+
+    def visible_tool_ids(self) -> list[str]:
+        """Return the tool ids whose plots' scene rect intersects the viewport."""
+        if not self._plots:
+            return []
+        view_rect = self._graphics.viewport().rect()
+        scene_view = self._graphics.mapToScene(view_rect).boundingRect()
+        visible: list[str] = []
+        for (tool_id, _col), plot in self._plots.items():
+            try:
+                if plot.plot_item.sceneBoundingRect().intersects(scene_view):
+                    visible.append(tool_id)
+            except RuntimeError:
+                continue
+        # Dedupe preserving order.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for t in visible:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        return ordered
+
+    # --- Layout helpers --------------------------------------------------
+
+    def _wanted_keys(self, plan: QueryPlan) -> list[tuple[str, str]]:
+        """C4.6: cap the rendered set to ``MAX_VISIBLE_PLOTS``."""
+        all_keys = [
+            (q.tool_id, col) for q in plan.per_tool_queries for col in q.raw_columns
+        ]
+        if len(all_keys) <= MAX_VISIBLE_PLOTS:
+            return all_keys
+        return all_keys[:MAX_VISIBLE_PLOTS]
+
+    def _update_progress(self) -> None:
+        if not self._planned_tools or not self._pending_tools:
+            self._progress_label.setVisible(False)
+            return
+        done = len(self._planned_tools) - len(self._pending_tools)
+        total = len(self._planned_tools)
+        self._progress_label.setText(f"Loading {done} / {total} tools…")
+        self._progress_label.setVisible(True)
+
+    def _update_cap_banner(self, plan: QueryPlan | None) -> None:
+        if plan is None:
+            self._cap_banner.setVisible(False)
+            return
+        total = sum(len(q.raw_columns) for q in plan.per_tool_queries)
+        if total > MAX_VISIBLE_PLOTS:
+            self._cap_banner.setText(
+                _BANNER_TEMPLATE.format(shown=MAX_VISIBLE_PLOTS, total=total)
+            )
+            self._cap_banner.setVisible(True)
+        else:
+            self._cap_banner.setVisible(False)
+
+    def _emit_visible_tools(self) -> None:
+        self.visibleToolsChanged.emit(self.visible_tool_ids())
 
     # --- Plot management --------------------------------------------------
 
-    def _upsert_plot(self, key: tuple[str, str], result: ToolResult | None) -> None:
+    def _upsert_plot(
+        self, key: tuple[str, str], result: ToolResult | None
+    ) -> _Plot:
         plot = self._plots.get(key) or self._create_plot(key)
         self._plots[key] = plot
         self._apply_data(plot, result, key)
+        return plot
 
     def _create_plot(self, key: tuple[str, str]) -> _Plot:
         tool_id, col = key
@@ -229,6 +375,9 @@ class ChartGrid(QWidget):
         cy = (view_range[1][0] + view_range[1][1]) / 2
         plot.overlay.setPos(cx, cy)
         plot.overlay.setVisible(True)
+
+    def _show_loading(self, plot: _Plot) -> None:
+        self._show_overlay(plot, _LOADING_TEXT, error=False)
 
     def _hide_overlay(self, plot: _Plot) -> None:
         plot.overlay.setVisible(False)

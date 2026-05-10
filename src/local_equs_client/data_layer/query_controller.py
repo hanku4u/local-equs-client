@@ -11,6 +11,7 @@ controller only ever emits ``queryCompleted`` for the latest dispatch.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -30,9 +31,18 @@ class _QueryJob(BackgroundJob):
         super().__init__()
         self._engine = engine
         self._plan = plan
+        # Set by QueryController after construction; called from the worker
+        # thread as each tool's result lands.
+        self.on_tool_complete: Callable[[str, Any], None] | None = None
+        self.tool_priority: list[str] | None = None
 
     def run(self) -> Any:
-        return self._engine.execute(self._plan, cancelled=self._is_cancelled)
+        return self._engine.execute(
+            self._plan,
+            cancelled=self._is_cancelled,
+            on_tool_complete=self.on_tool_complete,
+            tool_priority=self.tool_priority,
+        )
 
     def _is_cancelled(self) -> bool:
         return self.cancelled
@@ -41,7 +51,9 @@ class _QueryJob(BackgroundJob):
 class QueryController(QObject):
     """Routes selection changes through planner + engine and emits results."""
 
-    queryCompleted = Signal(object, object)  # (QueryPlan, dict[str, pyarrow.Table])
+    queryPlanned = Signal(object)  # QueryPlan — emitted before queries run
+    toolCompleted = Signal(object, str, object)  # (QueryPlan, tool_id, ToolResult)
+    queryCompleted = Signal(object, object)  # (QueryPlan, dict[str, ToolResult])
     queryFailed = Signal(object)  # exception
 
     DEBOUNCE_MS = 180
@@ -72,12 +84,19 @@ class QueryController(QObject):
         self._debounce.timeout.connect(self._dispatch)
 
         self._current_job: _QueryJob | None = None
+        self._tool_priority: list[str] = []
 
         self._model.selectionChanged.connect(self._debounce.start)
         if self._view_controller is not None:
             # A mode flip is also a reason to re-query.
             self._view_controller.modeChanged.connect(self._debounce.start)
             self._view_controller.groupByChanged.connect(self._debounce.start)
+
+    # --- Viewport priority hook (C4.5) -----------------------------------
+
+    def set_tool_priority(self, tool_ids: list[str]) -> None:
+        """C4.5: hint the engine to submit these tools first on the next dispatch."""
+        self._tool_priority = list(tool_ids)
 
     # --- Public surface ---------------------------------------------------
 
@@ -110,9 +129,21 @@ class QueryController(QObject):
         snapshot = self._model.snapshot()
         plan = self._planner.plan(snapshot, self._current_mode, self._viewport_width)
 
+        # C4.4: tell the chart grid the plan as soon as it's ready, before
+        # any DuckDB work has started. The grid lays out empty placeholder
+        # frames so the UI doesn't blank then refill.
+        self.queryPlanned.emit(plan)
+
         job = _QueryJob(self._engine, plan)
         captured_plan = plan
         captured_job = job
+
+        def _on_tool_done(tool_id: str, result: Any) -> None:
+            # Called from the engine worker thread; Qt queues the signal to
+            # whichever thread the slot is on.
+            if captured_job is not self._current_job:
+                return  # stale dispatch
+            self.toolCompleted.emit(captured_plan, tool_id, result)
 
         def _on_finished(result: object) -> None:
             if captured_job is not self._current_job:
@@ -128,6 +159,8 @@ class QueryController(QObject):
                 return
             self.queryFailed.emit(exc)
 
+        job.on_tool_complete = _on_tool_done
+        job.tool_priority = list(self._tool_priority)
         job.finished.connect(_on_finished)
         job.failed.connect(_on_failed)
 

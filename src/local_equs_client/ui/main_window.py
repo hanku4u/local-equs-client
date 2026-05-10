@@ -99,11 +99,17 @@ class MainWindow(QMainWindow):
     # --- Query pipeline wiring -------------------------------------------
 
     def _wire_query_pipeline(self) -> None:
+        # C4.4: layout placeholders the moment the plan is ready, fill per tool
+        # as results arrive, then finalize on the full queryCompleted.
+        self._controller.queryPlanned.connect(self._chart_grid.on_plan_ready)
+        self._controller.toolCompleted.connect(self._chart_grid.on_tool_complete)
         self._controller.queryCompleted.connect(self._chart_grid.update_from_results)
         self._controller.queryFailed.connect(self._on_query_failed)
         # Pan/zoom on the charts updates the model's time_range; the controller
         # then debounces and re-queries at the new resolution.
         self._chart_grid.rangeChangedByUser.connect(self._model.set_time_range)
+        # C4.5: tool order visible in the grid feeds the engine's submit order.
+        self._chart_grid.visibleToolsChanged.connect(self._controller.set_tool_priority)
 
     def _on_query_failed(self, exc: object) -> None:
         logger.warning("Query failed: %s", exc)
