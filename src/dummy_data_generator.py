@@ -30,7 +30,7 @@ import argparse
 import json
 import random
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -327,7 +327,7 @@ def synthesize_wafer_trace(
 # Per-tool generation and parquet writing
 # ---------------------------------------------------------------------------
 
-def _arrow_table(timestamps: np.ndarray, columns: dict[str, np.ndarray]) -> "pa.Table":
+def _arrow_table(timestamps: np.ndarray, columns: dict[str, np.ndarray]) -> pa.Table:
     """Build an Arrow table with a tz-aware UTC timestamp column."""
     # timestamps is datetime64[us]; convert to int64 microseconds since epoch
     ts_int = (timestamps - np.datetime64("1970-01-01", "us")).astype("int64")
@@ -385,7 +385,7 @@ def generate_tool_data(
             unique_hours = np.unique(hour_seconds)
             for h in unique_hours:
                 mask = hour_seconds == h
-                hour_dt = (datetime(1970, 1, 1, tzinfo=timezone.utc)
+                hour_dt = (datetime(1970, 1, 1, tzinfo=UTC)
                            + timedelta(seconds=int(h) * 3600))
                 chunks = buckets.setdefault(hour_dt, [])
                 chunks.append((ts[mask], {s: sensor_data[s][mask] for s in SENSORS}))
@@ -459,11 +459,11 @@ def main() -> int:
     if args.start:
         start = datetime.fromisoformat(args.start)
         if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
+            start = start.replace(tzinfo=UTC)
         else:
-            start = start.astimezone(timezone.utc)
+            start = start.astimezone(UTC)
     else:
-        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
         start = now - timedelta(hours=args.hours)
     end = start + timedelta(hours=args.hours)
 
@@ -479,12 +479,17 @@ def main() -> int:
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    print(f"Local EQUS dummy data generator")
+    print("Local EQUS dummy data generator")
     print(f"  Window:  {start.isoformat()}  ->  {end.isoformat()}  ({args.hours}h)")
     print(f"  Tools:   {len(tools)} of {len(ALL_TOOLS)}")
     print(f"  Sensors: {len(SENSORS)} per tool, {SAMPLE_HZ} Hz when running")
     print(f"  Output:  {args.output.resolve()}")
-    print(f"  Layout:  {'single file per tool' if args.single_file else 'hour-bucketed (tool/YYYY/MM/DD/HH.parquet)'}")
+    layout = (
+        "single file per tool"
+        if args.single_file
+        else "hour-bucketed (tool/YYYY/MM/DD/HH.parquet)"
+    )
+    print(f"  Layout:  {layout}")
     print()
 
     summaries = []
@@ -514,7 +519,7 @@ def main() -> int:
 
     if args.write_manifest:
         manifest = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),
             "sample_hz": SAMPLE_HZ,

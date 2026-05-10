@@ -69,3 +69,18 @@ CREATE TABLE cached_manifest (
     etag        TEXT,
     fetched_at  TEXT NOT NULL
 );
+
+-- migrations/005_canonicals_and_categories.sql adds caches for the M3 metadata.
+CREATE TABLE cached_canonical_sensors (
+    prc_group_id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    etag         TEXT,
+    fetched_at   TEXT NOT NULL
+);
+
+CREATE TABLE cached_categories (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    payload_json TEXT NOT NULL,
+    etag         TEXT,
+    fetched_at   TEXT NOT NULL
+);

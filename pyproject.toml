@@ -75,6 +75,10 @@ ignore_missing_imports = true
 module = ["requests", "requests.*", "responses"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["dummy_data_generator"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
