@@ -114,17 +114,24 @@ class TimeRangeSelector(QWidget):
 
     def _refresh_extent(self) -> None:
         files = self._library.all_files()
-        if not files:
-            self._extent_hint.setText("No local data — pick any range; query will warn.")
-            self._extent_hint.setPos(0, 0)
-            self._region.setBounds((0, 1))
-            return
+        self._suppress_push = True
+        try:
+            if not files:
+                self._extent_hint.setText("No local data — pick any range; query will warn.")
+                self._extent_hint.setPos(0, 0)
+                # No bounds: leave the region at whatever the model says.
+                return
 
-        ext_min = min(f.min_ts for f in files).timestamp()
-        ext_max = max(f.max_ts for f in files).timestamp()
-        self._region.setBounds((ext_min, ext_max))
-        self._plot.setXRange(ext_min, ext_max, padding=0.02)
-        self._extent_hint.setText("")
+            ext_min = min(f.min_ts for f in files).timestamp()
+            ext_max = max(f.max_ts for f in files).timestamp()
+            self._region.setBounds((ext_min, ext_max))
+            self._plot.setXRange(ext_min, ext_max, padding=0.02)
+            self._extent_hint.setText("")
+            # setBounds may have clamped the region; re-apply the model's range.
+            current = self._model.time_range
+            self._region.setRegion((current.start.timestamp(), current.end.timestamp()))
+        finally:
+            self._suppress_push = False
 
     # --- Push / pull ------------------------------------------------------
 
