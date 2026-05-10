@@ -24,10 +24,15 @@ class Settings:
 
     data_dir: Path
     server_url: str | None = None
+    permissions_simulate_admin: bool = False
 
     @classmethod
     def defaults(cls) -> Settings:
-        return cls(data_dir=paths.data_dir(), server_url=None)
+        return cls(
+            data_dir=paths.data_dir(),
+            server_url=None,
+            permissions_simulate_admin=False,
+        )
 
     @classmethod
     def from_file(cls, path: Path) -> Settings:
@@ -41,10 +46,12 @@ class Settings:
 
         data_dir_raw = raw.get("data_dir")
         server_url_raw = raw.get("server_url")
+        admin_raw = raw.get("permissions_simulate_admin")
         return replace(
             defaults,
             data_dir=Path(data_dir_raw).expanduser() if data_dir_raw else defaults.data_dir,
             server_url=server_url_raw or None,
+            permissions_simulate_admin=bool(admin_raw) if admin_raw is not None else False,
         )
 
 
@@ -87,6 +94,8 @@ def _to_toml(s: Settings) -> str:
     lines = [f"data_dir = {_toml_string(str(s.data_dir))}"]
     if s.server_url:
         lines.append(f"server_url = {_toml_string(s.server_url)}")
+    if s.permissions_simulate_admin:
+        lines.append("permissions_simulate_admin = true")
     return "\n".join(lines) + "\n"
 
 
