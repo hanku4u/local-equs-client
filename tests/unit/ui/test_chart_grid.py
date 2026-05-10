@@ -244,3 +244,66 @@ def test_overlay_hidden_when_data_returns(qapp) -> None:
 
     grid.update_from_results(plan, {"etch_a1": _make_results(columns=("c",))})
     assert not plot.overlay.isVisible()
+
+
+# --- C4.4: progressive rendering ------------------------------------------
+
+
+def test_on_plan_ready_lays_out_loading_placeholders(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+
+    assert set(grid._plots) == {("a", "c"), ("b", "c")}  # noqa: SLF001
+    for plot in grid._plots.values():  # noqa: SLF001
+        assert plot.overlay.isVisible()
+        assert "Loading" in plot.overlay.toPlainText()
+
+
+def test_progress_label_visible_until_all_tools_complete(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+    assert grid._progress_label.isVisible()  # noqa: SLF001
+
+    grid.on_tool_complete(plan, "a", _make_results(columns=("c",)))
+    assert grid._progress_label.isVisible()  # noqa: SLF001
+    assert "1 / 2" in grid._progress_label.text()  # noqa: SLF001
+
+    grid.on_tool_complete(plan, "b", _make_results(columns=("c",)))
+    assert not grid._progress_label.isVisible()  # noqa: SLF001
+
+
+def test_on_tool_complete_fills_only_that_tool(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+
+    grid.on_tool_complete(plan, "a", _make_results(columns=("c",)))
+
+    assert not grid._plots[("a", "c")].overlay.isVisible()  # noqa: SLF001
+    assert grid._plots[("b", "c")].overlay.isVisible()  # noqa: SLF001 — still loading
+
+
+# --- C4.6: chart cap + banner --------------------------------------------
+
+
+def test_cap_banner_hidden_below_threshold(qapp) -> None:
+    grid = ChartGrid()
+    grid.on_plan_ready(_make_plan([("a", ("c",))]))
+    assert not grid._cap_banner.isVisible()  # noqa: SLF001
+
+
+def test_cap_banner_shows_when_plan_exceeds_max(qapp) -> None:
+    from local_equs_client.ui.chart_grid import MAX_VISIBLE_PLOTS
+
+    big = [(f"t{i}", ("c",)) for i in range(MAX_VISIBLE_PLOTS + 5)]
+    plan = _make_plan(big)
+    grid = ChartGrid()
+    grid.on_plan_ready(plan)
+
+    assert grid._cap_banner.isVisible()  # noqa: SLF001
+    # Only the first MAX_VISIBLE_PLOTS plots were created.
+    assert len(grid._plots) == MAX_VISIBLE_PLOTS  # noqa: SLF001
+    text = grid._cap_banner.text()  # noqa: SLF001
+    assert f"of {MAX_VISIBLE_PLOTS + 5}" in text

@@ -62,7 +62,20 @@ class QueryEngine:
         self,
         plan: QueryPlan,
         cancelled: Callable[[], bool] | None = None,
+        on_tool_complete: Callable[[str, ToolResult], None] | None = None,
+        tool_priority: list[str] | None = None,
     ) -> dict[str, ToolResult]:
+        """Execute ``plan`` and return ``{tool_id: ToolResult}``.
+
+        Args:
+            plan: The query plan to execute.
+            cancelled: Polled between completed queries; raising on True.
+            on_tool_complete: Called with ``(tool_id, result)`` as each tool's
+                query lands. The C4.4 progressive renderer hooks here so the
+                chart grid can fill plots one tool at a time.
+            tool_priority: C4.5 — ``tool_id`` order to submit in. Tools listed
+                first are submitted first; unlisted tools tail-submit.
+        """
         if not plan.per_tool_queries:
             return {}
 
@@ -102,10 +115,11 @@ class QueryEngine:
                 conn.close()
                 active_connections.pop(tool_query.tool_id, None)
 
-        max_workers = min(len(plan.per_tool_queries), _MAX_WORKERS)
+        ordered_queries = _order_by_priority(plan.per_tool_queries, tool_priority)
+        max_workers = min(len(ordered_queries), _MAX_WORKERS)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures: dict[Future[tuple[str, ToolResult]], ToolQuery] = {
-                pool.submit(run_one, q): q for q in plan.per_tool_queries
+                pool.submit(run_one, q): q for q in ordered_queries
             }
             pending: set[Future[tuple[str, ToolResult]]] = set(futures)
 
@@ -126,8 +140,28 @@ class QueryEngine:
                 for fut in done:
                     tool_id, result = fut.result()
                     results[tool_id] = result
+                    if on_tool_complete is not None:
+                        try:
+                            on_tool_complete(tool_id, result)
+                        except Exception:  # noqa: BLE001 — callback errors must not kill the engine
+                            logger.warning(
+                                "on_tool_complete callback failed for %s", tool_id, exc_info=True
+                            )
 
         return results
+
+
+def _order_by_priority(
+    queries: list[ToolQuery], priority: list[str] | None
+) -> list[ToolQuery]:
+    """Stable-sort ``queries`` so tools in ``priority`` come first, original order tail."""
+    if not priority:
+        return list(queries)
+    priority_index = {tool_id: i for i, tool_id in enumerate(priority)}
+    return sorted(
+        queries,
+        key=lambda q: (priority_index.get(q.tool_id, len(priority)), q.tool_id),
+    )
 
 
 def _build_sql(query: ToolQuery, resolution: timedelta) -> str:
