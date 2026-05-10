@@ -67,6 +67,10 @@ module = ["local_equs_client.ui.*"]
 ignore_errors = false
 strict = false
 
+[[tool.mypy.overrides]]
+module = ["pyqtgraph", "pyqtgraph.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
