@@ -36,9 +36,8 @@ def test_constructs_with_dependencies(qapp, env) -> None:
 def test_menu_bar_has_file_view_help(qapp, env) -> None:
     model, library, cache = env
     window = MainWindow(model, library, cache)
-    titles = [m.title() for m in window.menuBar().findChildren(type(window.menuBar().addMenu("")))]
-    titles = [t for t in titles if t]  # filter the throwaway "" menu
-    # &File renders as 'File' on some platforms; just check the leading character set.
+    titles = [action.text() for action in window.menuBar().actions()]
+    # "&File" keeps the mnemonic prefix; substring match handles both styles.
     assert any("File" in t for t in titles)
     assert any("View" in t for t in titles)
     assert any("Help" in t for t in titles)

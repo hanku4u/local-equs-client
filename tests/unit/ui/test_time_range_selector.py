@@ -70,13 +70,15 @@ def test_external_model_change_syncs_inputs(qapp, empty_library: LocalLibrary) -
 
 def test_invalid_range_does_not_push(qapp, empty_library: LocalLibrary) -> None:
     """End <= start should not overwrite the model's range."""
+    from PySide6.QtCore import QDateTime, Qt
+
     model = SelectionModel()
     original = model.time_range
     widget = TimeRangeSelector(model, empty_library)
 
     bad_end = original.start - timedelta(hours=1)
     widget._end_edit.setDateTime(  # noqa: SLF001
-        widget._end_edit.dateTime().fromSecsSinceEpoch(int(bad_end.timestamp()))
+        QDateTime.fromSecsSinceEpoch(int(bad_end.timestamp()), Qt.TimeSpec.UTC)
     )
     widget._push_to_model()  # noqa: SLF001 — bypass debounce
 
