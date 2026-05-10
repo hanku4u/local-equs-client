@@ -1,7 +1,8 @@
 """Process-wide ``Settings`` singleton backed by ``config.toml`` (C0.3, C2.1, C5.10).
 
-M0 scope is the data directory only. Server URL, telemetry opt-out, update-check
-frequency, and the permissions-simulate-admin flag get added by later tasks.
+C0.3 lit up the data dir; C2.1 (this revision) adds ``server_url``. Telemetry
+opt-out, update-check frequency, and the permissions-simulate-admin flag join
+later.
 """
 
 from __future__ import annotations
@@ -22,10 +23,11 @@ class Settings:
     """
 
     data_dir: Path
+    server_url: str | None = None
 
     @classmethod
     def defaults(cls) -> Settings:
-        return cls(data_dir=paths.data_dir())
+        return cls(data_dir=paths.data_dir(), server_url=None)
 
     @classmethod
     def from_file(cls, path: Path) -> Settings:
@@ -37,10 +39,12 @@ class Settings:
         with path.open("rb") as fh:
             raw = tomllib.load(fh)
 
-        data_dir = raw.get("data_dir")
+        data_dir_raw = raw.get("data_dir")
+        server_url_raw = raw.get("server_url")
         return replace(
             defaults,
-            data_dir=Path(data_dir).expanduser() if data_dir else defaults.data_dir,
+            data_dir=Path(data_dir_raw).expanduser() if data_dir_raw else defaults.data_dir,
+            server_url=server_url_raw or None,
         )
 
 
@@ -80,7 +84,10 @@ def save(new_settings: Settings) -> None:
 
 
 def _to_toml(s: Settings) -> str:
-    return f"data_dir = {_toml_string(str(s.data_dir))}\n"
+    lines = [f"data_dir = {_toml_string(str(s.data_dir))}"]
+    if s.server_url:
+        lines.append(f"server_url = {_toml_string(s.server_url)}")
+    return "\n".join(lines) + "\n"
 
 
 def _toml_string(value: str) -> str:

@@ -99,3 +99,34 @@ def test_save_escapes_backslashes_in_path(_isolated_app_dir: Path) -> None:
     settings.reset_settings()
 
     assert settings.get_settings().data_dir == weird
+
+
+def test_server_url_default_is_none(_isolated_app_dir: Path) -> None:
+    assert settings.get_settings().server_url is None
+
+
+def test_server_url_round_trips_through_save(_isolated_app_dir: Path) -> None:
+    settings.save(
+        settings.Settings(
+            data_dir=_isolated_app_dir / "data",
+            server_url="https://equs.example.com",
+        )
+    )
+    settings.reset_settings()
+    s = settings.get_settings()
+    assert s.server_url == "https://equs.example.com"
+
+
+def test_empty_server_url_in_config_treated_as_none(_isolated_app_dir: Path) -> None:
+    paths.config_file().write_text(
+        f"data_dir = {_toml_string(str(_isolated_app_dir / 'data'))}\nserver_url = \"\"\n",
+        encoding="utf-8",
+    )
+    s = settings.get_settings()
+    assert s.server_url is None
+
+
+def test_omitting_server_url_means_not_persisted(_isolated_app_dir: Path) -> None:
+    settings.save(settings.Settings(data_dir=_isolated_app_dir / "data", server_url=None))
+    config = tomllib.loads(paths.config_file().read_text(encoding="utf-8"))
+    assert "server_url" not in config
