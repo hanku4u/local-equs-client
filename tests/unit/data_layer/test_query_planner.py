@@ -210,3 +210,128 @@ def test_no_warnings_when_fully_covered(library_with_files) -> None:
     plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
 
     assert plan.partial_data_warnings == []
+
+
+# --- C3.2: canonical → raw expansion ---------------------------------------
+
+
+def _selection_with_canonical(
+    tools: tuple[str, ...],
+    sensors_canonical: tuple[str, ...] = (),
+    sensors_raw: tuple[str, ...] = (),
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Selection:
+    s = start or datetime(2026, 1, 1, tzinfo=UTC)
+    e = end or s + timedelta(seconds=60)
+    return Selection(
+        tools=tools,
+        sensors_canonical=sensors_canonical,
+        sensors_raw=sensors_raw,
+        time_range=TimeRange(start=s, end=e),
+    )
+
+
+class _StubMetadataCache:
+    """Cache stub returning a hand-rolled mapping table."""
+
+    def __init__(self, table: dict[tuple[str, str], str]) -> None:
+        self._table = table
+
+    def mapping(self, tool_id: str, canonical_name: str) -> str | None:
+        return self._table.get((tool_id, canonical_name))
+
+
+def test_canonical_expands_per_tool_via_metadata_cache(library_with_files) -> None:
+    data_dir, conn = library_with_files
+    library = LocalLibrary(data_dir, conn)
+
+    cache = _StubMetadataCache(
+        {
+            ("etch_a1", "chamber_pressure"): "ChamberPressure_torr",
+            ("etch_a2", "chamber_pressure"): "PCham_torr",
+        }
+    )
+    planner = QueryPlanner(library, metadata_cache=cache)
+
+    selection = _selection_with_canonical(
+        tools=("etch_a1", "etch_a2"),
+        sensors_canonical=("chamber_pressure",),
+    )
+    plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
+
+    by_tool = {q.tool_id: q for q in plan.per_tool_queries}
+    assert by_tool["etch_a1"].raw_columns == ("ChamberPressure_torr",)
+    assert by_tool["etch_a2"].raw_columns == ("PCham_torr",)
+    assert plan.missing_mappings == []
+
+
+def test_missing_mapping_recorded_and_warned(library_with_files) -> None:
+    data_dir, conn = library_with_files
+    library = LocalLibrary(data_dir, conn)
+
+    cache = _StubMetadataCache(
+        {
+            ("etch_a1", "chamber_pressure"): "ChamberPressure_torr",
+            # etch_b1 has no entry → missing mapping
+        }
+    )
+    planner = QueryPlanner(library, metadata_cache=cache)
+
+    selection = _selection_with_canonical(
+        tools=("etch_a1", "etch_b1"),
+        sensors_canonical=("chamber_pressure",),
+    )
+    plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
+
+    by_tool = {q.tool_id: q for q in plan.per_tool_queries}
+    assert by_tool["etch_a1"].raw_columns == ("ChamberPressure_torr",)
+    assert by_tool["etch_b1"].raw_columns == ()  # nothing to query
+    from local_equs_client.data_layer.query_planner import MissingMapping
+
+    assert plan.missing_mappings == [
+        MissingMapping(tool_id="etch_b1", canonical_name="chamber_pressure")
+    ]
+    assert any(
+        "etch_b1" in w and "chamber_pressure" in w for w in plan.partial_data_warnings
+    )
+
+
+def test_canonical_and_raw_combine_without_duplicates(library_with_files) -> None:
+    data_dir, conn = library_with_files
+    library = LocalLibrary(data_dir, conn)
+    cache = _StubMetadataCache(
+        {("etch_a1", "chamber_pressure"): "ChamberPressure_torr"}
+    )
+    planner = QueryPlanner(library, metadata_cache=cache)
+
+    selection = _selection_with_canonical(
+        tools=("etch_a1",),
+        sensors_canonical=("chamber_pressure",),
+        # canonical maps to a raw that's already in the raw list:
+        sensors_raw=("ChamberPressure_torr", "rf_power"),
+    )
+    plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
+
+    cols = plan.per_tool_queries[0].raw_columns
+    assert cols == ("ChamberPressure_torr", "rf_power")  # de-duped, order preserved
+
+
+def test_canonical_without_metadata_cache_records_missing(library_with_files) -> None:
+    data_dir, conn = library_with_files
+    library = LocalLibrary(data_dir, conn)
+    planner = QueryPlanner(library)  # no metadata cache
+
+    selection = _selection_with_canonical(
+        tools=("etch_a1",),
+        sensors_canonical=("chamber_pressure",),
+    )
+    plan = planner.plan(selection, mode="standard", viewport_width_px=1920)
+
+    from local_equs_client.data_layer.query_planner import MissingMapping
+
+    assert plan.missing_mappings == [
+        MissingMapping(tool_id="etch_a1", canonical_name="chamber_pressure")
+    ]
+    assert plan.per_tool_queries[0].raw_columns == ()
