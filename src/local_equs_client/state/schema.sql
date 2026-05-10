@@ -61,3 +61,11 @@ CREATE TABLE app_state (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- migrations/004_cached_manifest.sql stores the most recent /v1/manifest.json.
+CREATE TABLE cached_manifest (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    body_json   TEXT NOT NULL,
+    etag        TEXT,
+    fetched_at  TEXT NOT NULL
+);

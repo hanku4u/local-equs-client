@@ -22,15 +22,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
+from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.ui.chart_grid import ChartGrid
 from local_equs_client.ui.local_library_panel import LocalLibraryPanel
 from local_equs_client.ui.sensor_picker import SensorPicker
 from local_equs_client.ui.settings_panel import SettingsPanel
 from local_equs_client.ui.time_range_selector import TimeRangeSelector
+from local_equs_client.ui.updates_panel import UpdatesPanel
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +51,16 @@ class MainWindow(QMainWindow):
         library: LocalLibrary,
         metadata_cache: MetadataCache,
         query_controller: QueryController,
+        update_manager: UpdateManager | None = None,
+        download_manager: DownloadManager | None = None,
     ) -> None:
         super().__init__()
         self._model = selection_model
         self._library = library
         self._cache = metadata_cache
         self._controller = query_controller
+        self._update_manager = update_manager
+        self._download_manager = download_manager
         self._qsettings = QSettings("LocalEQUS", "Client")
 
         self.setWindowTitle("Local EQUS")
@@ -123,6 +130,12 @@ class MainWindow(QMainWindow):
         library_action = QAction("&Local Library…", self)
         library_action.triggered.connect(self._open_local_library)
         view_menu.addAction(library_action)
+        updates_action = QAction("&Updates…", self)
+        updates_action.triggered.connect(self._open_updates)
+        updates_action.setEnabled(
+            self._update_manager is not None and self._download_manager is not None
+        )
+        view_menu.addAction(updates_action)
 
         help_menu = bar.addMenu("&Help")
         about_action = QAction("&About", self)
@@ -137,9 +150,28 @@ class MainWindow(QMainWindow):
     def _open_local_library(self) -> None:
         LocalLibraryPanel(self._library, self).exec()
 
+    def _open_updates(self) -> None:
+        if self._update_manager is None or self._download_manager is None:
+            QMessageBox.information(
+                self,
+                "Updates unavailable",
+                "Configure a server URL in Settings and restart to enable updates.",
+            )
+            return
+        UpdatesPanel(self._update_manager, self._download_manager, self).exec()
+        # After downloads, indices may have changed.
+        self._cache.invalidate()
+        self._picker.refresh()
+        self._time_range.refresh_extent()
+        self._controller.trigger()
+
     def _rescan(self) -> None:
         count = self._library.scan()
         self._cache.invalidate()
+        # Refresh server-side sensor catalog for each tool; falls back to cache
+        # / parquet schema when offline.
+        for tool_id in sorted({f.tool_id for f in self._library.all_files() if not f.archived}):
+            self._cache.refresh_sensors(tool_id)
         self._picker.refresh()
         self._time_range.refresh_extent()
         self._controller.trigger()
