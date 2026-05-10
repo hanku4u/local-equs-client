@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pyqtgraph as pg
-from PySide6.QtCore import QDateTime, Qt, QTimer, Signal
+from PySide6.QtCore import QDateTime, Qt, QTimer, QTimeZone, Signal
 from PySide6.QtWidgets import (
     QDateTimeEdit,
     QHBoxLayout,
@@ -27,6 +27,7 @@ from local_equs_client.selection.types import TimeRange
 
 _DEBOUNCE_MS = 200
 _DISPLAY_FORMAT = "yyyy-MM-dd HH:mm:ss"
+_UTC = QTimeZone.utc()
 
 
 class TimeRangeSelector(QWidget):
@@ -168,7 +169,7 @@ class TimeRangeSelector(QWidget):
 
 
 def _qdt_from_dt(value: datetime) -> QDateTime:
-    return QDateTime.fromSecsSinceEpoch(int(value.timestamp()), Qt.TimeSpec.UTC)
+    return QDateTime.fromSecsSinceEpoch(int(value.timestamp()), _UTC)
 
 
 def _dt_from_qdt(value: QDateTime) -> datetime:
@@ -176,7 +177,7 @@ def _dt_from_qdt(value: QDateTime) -> datetime:
 
 
 def _dt_from_epoch(value: float) -> QDateTime:
-    return QDateTime.fromSecsSinceEpoch(int(value), Qt.TimeSpec.UTC)
+    return QDateTime.fromSecsSinceEpoch(int(value), _UTC)
 
 
 __all__ = ["TimeRangeSelector"]
