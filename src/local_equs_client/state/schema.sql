@@ -54,3 +54,10 @@ CREATE TABLE cached_mappings (
     etag         TEXT,
     fetched_at   TEXT    NOT NULL
 );
+
+-- migrations/003_app_state.sql adds the generic app-wide key/value store.
+CREATE TABLE app_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
