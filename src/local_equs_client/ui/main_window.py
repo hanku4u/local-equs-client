@@ -28,6 +28,7 @@ from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
 from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
+from local_equs_client.selection.view_controller import ViewController
 from local_equs_client.ui.chart_grid import ChartGrid
 from local_equs_client.ui.local_library_panel import LocalLibraryPanel
 from local_equs_client.ui.mapping_editor import MappingEditor
@@ -35,6 +36,7 @@ from local_equs_client.ui.sensor_picker import SensorPicker
 from local_equs_client.ui.settings_panel import SettingsPanel
 from local_equs_client.ui.time_range_selector import TimeRangeSelector
 from local_equs_client.ui.updates_panel import UpdatesPanel
+from local_equs_client.ui.view_mode_bar import ViewModeBar
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
         query_controller: QueryController,
         update_manager: UpdateManager | None = None,
         download_manager: DownloadManager | None = None,
+        view_controller: ViewController | None = None,
     ) -> None:
         super().__init__()
         self._model = selection_model
@@ -62,6 +65,7 @@ class MainWindow(QMainWindow):
         self._controller = query_controller
         self._update_manager = update_manager
         self._download_manager = download_manager
+        self._view_controller = view_controller
         self._qsettings = QSettings("LocalEQUS", "Client")
 
         self.setWindowTitle("Local EQUS")
@@ -81,6 +85,13 @@ class MainWindow(QMainWindow):
 
         self._time_range = TimeRangeSelector(self._model, self._library)
         layout.addWidget(self._time_range)
+
+        # C4.9: view-mode + group-by toolbar above the splitter, when a
+        # ViewController is wired through.
+        self._view_mode_bar: ViewModeBar | None = None
+        if self._view_controller is not None:
+            self._view_mode_bar = ViewModeBar(self._view_controller)
+            layout.addWidget(self._view_mode_bar)
 
         self._splitter = QSplitter()
         self._picker = SensorPicker(self._model, self._library, self._cache)
@@ -110,6 +121,26 @@ class MainWindow(QMainWindow):
         self._chart_grid.rangeChangedByUser.connect(self._model.set_time_range)
         # C4.5: tool order visible in the grid feeds the engine's submit order.
         self._chart_grid.visibleToolsChanged.connect(self._controller.set_tool_priority)
+        # C4.9: view-mode flips drive the chart grid's stacked layout.
+        if self._view_controller is not None:
+            self._view_controller.modeChanged.connect(self._on_mode_changed)
+            self._chart_grid.set_mode(self._view_controller.mode)
+        # C4.7: sparkline click in overview promotes that pair to focus mode.
+        self._chart_grid.promoteRequested.connect(self._on_promote_requested)
+
+    def _on_mode_changed(self, mode: str) -> None:
+        from typing import cast as _cast
+
+        from local_equs_client.selection.types import ViewMode
+
+        self._chart_grid.set_mode(_cast(ViewMode, mode))
+
+    def _on_promote_requested(self, tool_id: str, sensor: str) -> None:
+        # Narrow the selection to just the clicked pair, then flip to focus.
+        self._model.set_tools((tool_id,))
+        self._model.set_sensors_canonical((sensor,))
+        if self._view_controller is not None:
+            self._view_controller.set_mode("focus")
 
     def _on_query_failed(self, exc: object) -> None:
         logger.warning("Query failed: %s", exc)
