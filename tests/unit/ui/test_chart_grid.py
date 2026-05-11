@@ -309,3 +309,80 @@ def test_cap_banner_shows_when_plan_exceeds_max(qapp) -> None:
     assert len(grid._plots) == MAX_VISIBLE_PLOTS  # noqa: SLF001
     text = grid._cap_banner.text()  # noqa: SLF001
     assert f"of {MAX_VISIBLE_PLOTS + 5}" in text
+
+
+# --- C4.7 overview mode ---------------------------------------------------
+
+
+def test_overview_mode_uses_sparklines_not_plots(qapp) -> None:
+    grid = ChartGrid()
+    grid.set_mode("overview")
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+
+    # Sparklines created, no PlotItems.
+    assert set(grid._sparklines) == {("a", "c"), ("b", "c")}  # noqa: SLF001
+    assert grid._plots == {}  # noqa: SLF001
+
+
+def test_overview_to_standard_clears_sparklines(qapp) -> None:
+    grid = ChartGrid()
+    grid.set_mode("overview")
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+    assert grid._sparklines  # noqa: SLF001
+
+    grid.set_mode("standard")
+    assert grid._sparklines == {}  # noqa: SLF001
+    assert set(grid._plots) == {("a", "c"), ("b", "c")}  # noqa: SLF001
+
+
+def test_sparkline_click_emits_promote(qapp) -> None:
+    from PySide6.QtCore import Qt as _Qt
+
+    grid = ChartGrid()
+    grid.set_mode("overview")
+    plan = _make_plan([("a", ("c",))])
+    grid.on_plan_ready(plan)
+
+    captured: list[tuple[str, str]] = []
+    grid.promoteRequested.connect(
+        lambda t, s: captured.append((t, s)), _Qt.DirectConnection
+    )
+    grid._sparklines[("a", "c")].clicked.emit("a", "c")  # noqa: SLF001
+    assert captured == [("a", "c")]
+
+
+# --- C4.8 focus mode ------------------------------------------------------
+
+
+def test_focus_mode_caps_at_four(qapp) -> None:
+    from local_equs_client.ui.chart_grid import FOCUS_MAX_PLOTS
+
+    grid = ChartGrid()
+    grid.set_mode("focus")
+    too_many = [(f"t{i}", ("c",)) for i in range(FOCUS_MAX_PLOTS + 3)]
+    grid.on_plan_ready(_make_plan(too_many))
+
+    assert len(grid._plots) == FOCUS_MAX_PLOTS  # noqa: SLF001
+
+
+def test_focus_mode_title_includes_stats(qapp) -> None:
+    grid = ChartGrid()
+    grid.set_mode("focus")
+    plan = _make_plan([("a", ("c",))])
+    grid.on_plan_ready(plan)
+    grid.update_from_results(plan, {"a": _make_results(columns=("c",))})
+
+    title = grid._plots[("a", "c")].plot_item.titleLabel.text  # noqa: SLF001
+    assert "min=" in title and "mean=" in title and "max=" in title
+
+
+def test_standard_mode_title_is_plain(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",))])
+    grid.on_plan_ready(plan)
+    grid.update_from_results(plan, {"a": _make_results(columns=("c",))})
+
+    title = grid._plots[("a", "c")].plot_item.titleLabel.text  # noqa: SLF001
+    assert "min=" not in title
