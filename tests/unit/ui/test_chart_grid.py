@@ -307,8 +307,67 @@ def test_cap_banner_shows_when_plan_exceeds_max(qapp) -> None:
     assert not grid._cap_banner.isHidden()  # noqa: SLF001
     # Only the first MAX_VISIBLE_PLOTS plots were created.
     assert len(grid._plots) == MAX_VISIBLE_PLOTS  # noqa: SLF001
-    text = grid._cap_banner.text()  # noqa: SLF001
+    text = grid._cap_banner_label.text()  # noqa: SLF001
     assert f"of {MAX_VISIBLE_PLOTS + 5}" in text
+
+
+# --- C4.10: soft guardrail (escalation + button + mode-aware hide) --------
+
+
+def test_banner_escalates_above_overview_escalation_threshold(qapp) -> None:
+    from local_equs_client.ui.chart_grid import OVERVIEW_ESCALATION_THRESHOLD
+
+    over_threshold = [
+        (f"t{i}", ("c",)) for i in range(OVERVIEW_ESCALATION_THRESHOLD + 5)
+    ]
+    grid = ChartGrid()
+    grid.on_plan_ready(_make_plan(over_threshold))
+
+    assert not grid._cap_banner.isHidden()  # noqa: SLF001
+    assert "Are you sure" in grid._cap_banner_label.text()  # noqa: SLF001
+    assert (
+        str(OVERVIEW_ESCALATION_THRESHOLD + 5)
+        in grid._cap_banner_label.text()  # noqa: SLF001
+    )
+
+
+def test_banner_button_emits_switch_to_overview(qapp) -> None:
+    from local_equs_client.ui.chart_grid import MAX_VISIBLE_PLOTS
+
+    big = [(f"t{i}", ("c",)) for i in range(MAX_VISIBLE_PLOTS + 5)]
+    grid = ChartGrid()
+    grid.on_plan_ready(_make_plan(big))
+
+    fired: list[bool] = []
+    grid.switchToOverviewRequested.connect(lambda: fired.append(True), Qt.DirectConnection)
+    grid._cap_banner_button.click()  # noqa: SLF001
+    assert fired == [True]
+
+
+def test_banner_hidden_in_overview_mode_even_above_threshold(qapp) -> None:
+    from local_equs_client.ui.chart_grid import MAX_VISIBLE_PLOTS
+
+    grid = ChartGrid()
+    grid.set_mode("overview")
+    big = [(f"t{i}", ("c",)) for i in range(MAX_VISIBLE_PLOTS + 5)]
+    grid.on_plan_ready(_make_plan(big))
+
+    assert grid._cap_banner.isHidden()  # noqa: SLF001
+
+
+def test_banner_reappears_when_switching_back_to_standard(qapp) -> None:
+    from local_equs_client.ui.chart_grid import MAX_VISIBLE_PLOTS
+
+    grid = ChartGrid()
+    big = [(f"t{i}", ("c",)) for i in range(MAX_VISIBLE_PLOTS + 5)]
+    grid.on_plan_ready(_make_plan(big))
+    assert not grid._cap_banner.isHidden()  # noqa: SLF001
+
+    grid.set_mode("overview")
+    assert grid._cap_banner.isHidden()  # noqa: SLF001
+
+    grid.set_mode("standard")
+    assert not grid._cap_banner.isHidden()  # noqa: SLF001
 
 
 # --- C4.7 overview mode ---------------------------------------------------

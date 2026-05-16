@@ -127,6 +127,8 @@ class MainWindow(QMainWindow):
             self._chart_grid.set_mode(self._view_controller.mode)
         # C4.7: sparkline click in overview promotes that pair to focus mode.
         self._chart_grid.promoteRequested.connect(self._on_promote_requested)
+        # C4.10: guardrail banner button switches view mode without touching selection.
+        self._chart_grid.switchToOverviewRequested.connect(self._on_switch_to_overview)
 
     def _on_mode_changed(self, mode: str) -> None:
         from typing import cast as _cast
@@ -141,6 +143,10 @@ class MainWindow(QMainWindow):
         self._model.set_sensors_canonical((sensor,))
         if self._view_controller is not None:
             self._view_controller.set_mode("focus")
+
+    def _on_switch_to_overview(self) -> None:
+        if self._view_controller is not None:
+            self._view_controller.set_mode("overview")
 
     def _on_query_failed(self, exc: object) -> None:
         logger.warning("Query failed: %s", exc)
