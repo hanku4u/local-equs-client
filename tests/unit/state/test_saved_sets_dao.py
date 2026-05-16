@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ def test_create_multiple_sorted_by_name(conn) -> None:
 
 def test_create_duplicate_name_raises(conn) -> None:
     dao.create(conn, "Dup", ("t1",), (), ())
-    with pytest.raises(Exception):  # unique constraint
+    with pytest.raises(sqlite3.IntegrityError):
         dao.create(conn, "Dup", ("t2",), (), ())
 
 
