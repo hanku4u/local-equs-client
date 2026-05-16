@@ -1,30 +1,27 @@
-"""PyQtGraph-based linked chart grid (C1.10, C1.11, C1.12, C1.13, C4.4, C4.6).
+"""PyQtGraph-based linked chart grid (C1.10, C1.11, C1.12, C1.13, C4.4, C4.6, C4.7, C4.8).
 
-One PlotItem per ``(tool_id, raw_column)`` pair. Avg drawn as a solid line,
-min/max as a faint fill band. All x-axes linked through the anchor plot and a
-synchronized vertical crosshair tracks the mouse across the whole grid. Updates
-flow through ``setData()`` so the existing curves keep their identity.
+One PlotItem per ``(tool_id, raw_column)`` pair in standard / focus mode.
+Avg drawn as a solid line, min/max as a faint fill band. All x-axes linked
+through the anchor plot and a synchronized vertical crosshair tracks the
+mouse across the whole grid. Updates flow through ``setData()`` so the
+existing curves keep their identity.
 
-C1.11: pan/zoom on any chart fires :attr:`rangeChangedByUser` (the controller
-listens and updates ``SelectionModel.time_range``). The widget suppresses that
-signal while applying its own programmatic range to avoid feedback loops.
+C1.11: pan/zoom fires :attr:`rangeChangedByUser`.
+C1.12: ``QueryError`` payloads render a red "Tool error" overlay.
+C1.13: empty / all-NaN results render "No data in range".
 
-C1.12: when a tool's query came back as :class:`QueryError`, every plot for
-that tool shows a red error label instead of a curve.
+C4.4: ``on_plan_ready(plan)`` lays out placeholder frames before any DuckDB
+query runs; ``on_tool_complete(plan, tool_id, result)`` fills them as
+results land. Progress label shows ``Loading X / Y tools…``.
 
-C1.13: when the result is empty (range outside local data, or column missing
-from every file in range), the plot shows "No data in range" centered.
+C4.6: ``MAX_VISIBLE_PLOTS`` caps simultaneous standard-mode plots; the
+banner above the grid steers excess into overview mode.
 
-C4.4: ``on_plan_ready(plan)`` lays out empty placeholder frames the moment
-``QueryController.queryPlanned`` fires, so the grid never blanks before the
-first chart appears. ``on_tool_complete(plan, tool_id, result)`` fills that
-tool's frames as the engine yields each result. A progress label at the top
-reports ``Loading X / Y tools…`` until all results have landed.
+C4.7: a parallel :class:`Sparkline` grid renders in overview mode. Each
+sparkline is a click-to-promote button that flips back to focus mode.
 
-C4.6: when a plan asks for more than ``MAX_VISIBLE_PLOTS`` simultaneous
-charts the grid renders the first slice and shows a banner pointing the
-user at overview mode for the full set. Full virtualized scroll-recycle is
-deferred (the practical escape hatch is the sparkline grid in C4.7).
+C4.8: focus mode caps at four enlarged charts; each plot title carries a
+``min/mean/max`` statistics strip computed from the visible range.
 """
 
 from __future__ import annotations
@@ -36,23 +33,37 @@ import numpy as np
 import pyarrow as pa
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, Signal
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGridLayout,
+    QLabel,
+    QScrollArea,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from local_equs_client.data_layer.query_engine import QueryError, ToolResult
 from local_equs_client.data_layer.query_planner import QueryPlan
-from local_equs_client.selection.types import TimeRange
+from local_equs_client.selection.types import TimeRange, ViewMode
+from local_equs_client.ui.sparkline import Sparkline
 
 _BAND_COLOR = (80, 120, 200, 60)
 _LINE_COLOR = (80, 120, 200)
 _GRID_ALPHA = 0.3
 _PLOT_HEIGHT_HINT = 200
+_FOCUS_HEIGHT_HINT = 380
 _NO_DATA_TEXT = "No data in range"
 _LOADING_TEXT = "Loading…"
 _ERROR_PREFIX = "Tool error: "
 _BANNER_TEMPLATE = (
     "Showing {shown} of {total} charts. Switch to overview mode for the full grid."
 )
-MAX_VISIBLE_PLOTS = 50  # C4.6 cap: practical ceiling for standard-mode rendering
+MAX_VISIBLE_PLOTS = 50
+FOCUS_MAX_PLOTS = 4  # C4.8 cap
+_OVERVIEW_COLUMNS = 5
+
+_STACK_GRAPHICS = 0
+_STACK_OVERVIEW = 1
 
 
 @dataclass(slots=True)
@@ -68,10 +79,11 @@ class _Plot:
 
 
 class ChartGrid(QWidget):
-    """Linked grid of plots, one per (tool, raw sensor) pair."""
+    """Linked grid of plots (standard / focus) + parallel sparkline grid (overview)."""
 
     rangeChangedByUser = Signal(object)  # emits a TimeRange
     visibleToolsChanged = Signal(object)  # C4.5: list[str] of tool ids currently visible
+    promoteRequested = Signal(str, str)  # C4.7: (tool_id, sensor) clicked in overview
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -93,59 +105,71 @@ class ChartGrid(QWidget):
         )
         layout.addWidget(self._cap_banner)
 
-        self._graphics = pg.GraphicsLayoutWidget()
-        layout.addWidget(self._graphics)
+        self._stack = QStackedWidget()
+        layout.addWidget(self._stack, stretch=1)
 
+        self._graphics = pg.GraphicsLayoutWidget()
+        self._stack.addWidget(self._graphics)  # index 0
+
+        self._overview_container = QScrollArea()
+        self._overview_container.setWidgetResizable(True)
+        self._overview_inner = QWidget()
+        self._overview_layout = QGridLayout(self._overview_inner)
+        self._overview_layout.setContentsMargins(4, 4, 4, 4)
+        self._overview_layout.setSpacing(6)
+        self._overview_container.setWidget(self._overview_inner)
+        self._stack.addWidget(self._overview_container)  # index 1
+
+        self._mode: ViewMode = "standard"
         self._plots: dict[tuple[str, str], _Plot] = {}
+        self._sparklines: dict[tuple[str, str], Sparkline] = {}
         self._anchor_plot: pg.PlotItem | None = None
         self._suppress_range_signal = False
         self._pending_tools: set[str] = set()
         self._planned_tools: set[str] = set()
+        self._last_plan: QueryPlan | None = None
+        self._last_results: dict[str, ToolResult] = {}
 
         self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._graphics.verticalScrollBar().valueChanged.connect(self._emit_visible_tools)
 
     # --- Public API -------------------------------------------------------
 
+    def set_mode(self, mode: ViewMode) -> None:
+        """Switch between overview / standard / focus rendering."""
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self._stack.setCurrentIndex(
+            _STACK_OVERVIEW if mode == "overview" else _STACK_GRAPHICS
+        )
+        if self._last_plan is not None:
+            self._rerender_from_cache()
+
     def on_plan_ready(self, plan: QueryPlan) -> None:
-        """C4.4: lay out empty placeholder frames the moment a plan is built."""
-        wanted = self._wanted_keys(plan)
-        wanted_set = set(wanted)
-
-        self._suppress_range_signal = True
-        try:
-            for key in list(self._plots):
-                if key not in wanted_set:
-                    self._remove_plot(key)
-            for key in wanted:
-                plot = self._upsert_plot(key, None)
-                self._show_loading(plot)
-
-            if plan.per_tool_queries and self._anchor_plot is not None:
-                tr = plan.per_tool_queries[0].time_range
-                self._anchor_plot.setXRange(
-                    tr.start.timestamp(), tr.end.timestamp(), padding=0
-                )
-        finally:
-            self._suppress_range_signal = False
-
+        """C4.4: lay out placeholder frames the moment a plan is built."""
+        self._last_plan = plan
+        self._last_results = {}
         self._planned_tools = {q.tool_id for q in plan.per_tool_queries}
         self._pending_tools = set(self._planned_tools)
-        self._update_progress()
         self._update_cap_banner(plan)
+        self._update_progress()
+        if self._mode == "overview":
+            self._layout_overview(plan, fill_loading=True)
+        else:
+            self._layout_graphics(plan, fill_loading=True)
         self._emit_visible_tools()
 
     def on_tool_complete(
         self, plan: QueryPlan, tool_id: str, result: ToolResult
     ) -> None:
         """C4.4: fill in the slot for one tool as its result arrives."""
-        for q in plan.per_tool_queries:
-            if q.tool_id != tool_id:
-                continue
-            for col in q.raw_columns:
-                key = (tool_id, col)
-                if key in self._plots:
-                    self._apply_data(self._plots[key], result, key)
+        self._last_plan = plan
+        self._last_results[tool_id] = result
+        if self._mode == "overview":
+            self._fill_overview_tool(plan, tool_id, result)
+        else:
+            self._fill_graphics_tool(plan, tool_id, result)
         self._pending_tools.discard(tool_id)
         self._update_progress()
 
@@ -153,70 +177,69 @@ class ChartGrid(QWidget):
         self, plan: QueryPlan, results: dict[str, ToolResult]
     ) -> None:
         """Apply a completed query plan + per-tool results to the grid."""
-        wanted = self._wanted_keys(plan)
-        wanted_set = set(wanted)
-
-        self._suppress_range_signal = True
-        try:
-            for key in list(self._plots):
-                if key not in wanted_set:
-                    self._remove_plot(key)
-
-            for key in wanted:
-                tool_id, _col = key
-                self._upsert_plot(key, results.get(tool_id))
-
-            if plan.per_tool_queries and self._anchor_plot is not None:
-                tr = plan.per_tool_queries[0].time_range
-                self._anchor_plot.setXRange(
-                    tr.start.timestamp(), tr.end.timestamp(), padding=0
-                )
-        finally:
-            self._suppress_range_signal = False
-
-        # All results in hand — clear progress.
-        self._pending_tools.clear()
+        self._last_plan = plan
+        self._last_results = dict(results)
         self._planned_tools = {q.tool_id for q in plan.per_tool_queries}
-        self._update_progress()
+        self._pending_tools.clear()
         self._update_cap_banner(plan)
+        self._update_progress()
+        if self._mode == "overview":
+            self._layout_overview(plan, fill_loading=False)
+        else:
+            self._layout_graphics(plan, fill_loading=False)
 
     def clear(self) -> None:
-        for key in list(self._plots):
-            self._remove_plot(key)
+        self._clear_graphics()
+        self._clear_overview()
         self._pending_tools.clear()
         self._planned_tools.clear()
+        self._last_plan = None
+        self._last_results = {}
         self._update_progress()
         self._update_cap_banner(None)
 
     def visible_tool_ids(self) -> list[str]:
-        """Return the tool ids whose plots' scene rect intersects the viewport."""
+        """Return the tool ids whose plots are in the current viewport."""
+        if self._mode == "overview":
+            return sorted({k[0] for k in self._sparklines})
         if not self._plots:
             return []
         view_rect = self._graphics.viewport().rect()
         scene_view = self._graphics.mapToScene(view_rect).boundingRect()
-        visible: list[str] = []
+        ordered: list[str] = []
+        seen: set[str] = set()
         for (tool_id, _col), plot in self._plots.items():
             try:
-                if plot.plot_item.sceneBoundingRect().intersects(scene_view):
-                    visible.append(tool_id)
+                if not plot.plot_item.sceneBoundingRect().intersects(scene_view):
+                    continue
             except RuntimeError:
                 continue
-        # Dedupe preserving order.
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for t in visible:
-            if t not in seen:
-                seen.add(t)
-                ordered.append(t)
+            if tool_id in seen:
+                continue
+            seen.add(tool_id)
+            ordered.append(tool_id)
         return ordered
+
+    # --- Re-render after a mode switch -----------------------------------
+
+    def _rerender_from_cache(self) -> None:
+        if self._last_plan is None:
+            return
+        if self._mode == "overview":
+            self._layout_overview(self._last_plan, fill_loading=False)
+        else:
+            self._layout_graphics(self._last_plan, fill_loading=False)
 
     # --- Layout helpers --------------------------------------------------
 
     def _wanted_keys(self, plan: QueryPlan) -> list[tuple[str, str]]:
-        """C4.6: cap the rendered set to ``MAX_VISIBLE_PLOTS``."""
         all_keys = [
             (q.tool_id, col) for q in plan.per_tool_queries for col in q.raw_columns
         ]
+        if self._mode == "focus":
+            return all_keys[:FOCUS_MAX_PLOTS]
+        if self._mode == "overview":
+            return all_keys
         if len(all_keys) <= MAX_VISIBLE_PLOTS:
             return all_keys
         return all_keys[:MAX_VISIBLE_PLOTS]
@@ -235,9 +258,12 @@ class ChartGrid(QWidget):
             self._cap_banner.setVisible(False)
             return
         total = sum(len(q.raw_columns) for q in plan.per_tool_queries)
-        if total > MAX_VISIBLE_PLOTS:
+        cap_active = (
+            FOCUS_MAX_PLOTS if self._mode == "focus" else MAX_VISIBLE_PLOTS
+        )
+        if self._mode != "overview" and total > cap_active:
             self._cap_banner.setText(
-                _BANNER_TEMPLATE.format(shown=MAX_VISIBLE_PLOTS, total=total)
+                _BANNER_TEMPLATE.format(shown=cap_active, total=total)
             )
             self._cap_banner.setVisible(True)
         else:
@@ -246,7 +272,48 @@ class ChartGrid(QWidget):
     def _emit_visible_tools(self) -> None:
         self.visibleToolsChanged.emit(self.visible_tool_ids())
 
-    # --- Plot management --------------------------------------------------
+    # --- Standard / focus graphics rendering -----------------------------
+
+    def _layout_graphics(self, plan: QueryPlan, *, fill_loading: bool) -> None:
+        wanted = self._wanted_keys(plan)
+        wanted_set = set(wanted)
+        self._clear_overview()
+
+        self._suppress_range_signal = True
+        try:
+            for key in list(self._plots):
+                if key not in wanted_set:
+                    self._remove_plot(key)
+            for key in wanted:
+                tool_id, _col = key
+                if fill_loading:
+                    plot = self._upsert_plot(key, None)
+                    self._show_loading(plot)
+                else:
+                    self._upsert_plot(key, self._last_results.get(tool_id))
+
+            if plan.per_tool_queries and self._anchor_plot is not None:
+                tr = plan.per_tool_queries[0].time_range
+                self._anchor_plot.setXRange(
+                    tr.start.timestamp(), tr.end.timestamp(), padding=0
+                )
+        finally:
+            self._suppress_range_signal = False
+
+    def _fill_graphics_tool(
+        self, plan: QueryPlan, tool_id: str, result: ToolResult
+    ) -> None:
+        for q in plan.per_tool_queries:
+            if q.tool_id != tool_id:
+                continue
+            for col in q.raw_columns:
+                key = (tool_id, col)
+                if key in self._plots:
+                    self._apply_data(self._plots[key], result, key)
+
+    def _clear_graphics(self) -> None:
+        for key in list(self._plots):
+            self._remove_plot(key)
 
     def _upsert_plot(
         self, key: tuple[str, str], result: ToolResult | None
@@ -266,7 +333,9 @@ class ChartGrid(QWidget):
             title=f"{tool_id} — {col}",
         )
         plot_item.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
-        plot_item.setMinimumHeight(_PLOT_HEIGHT_HINT)
+        plot_item.setMinimumHeight(
+            _FOCUS_HEIGHT_HINT if self._mode == "focus" else _PLOT_HEIGHT_HINT
+        )
         plot_item.setMouseEnabled(x=True, y=False)
         plot_item.disableAutoRange(axis="x")
 
@@ -335,14 +404,16 @@ class ChartGrid(QWidget):
         result: ToolResult | None,
         key: tuple[str, str],
     ) -> None:
-        _tool_id, col = key
+        tool_id, col = key
 
         if isinstance(result, QueryError):
             self._show_overlay(plot, f"{_ERROR_PREFIX}{result.message}", error=True)
+            plot.plot_item.setTitle(f"{tool_id} — {col}")
             return
 
         if result is None or result.num_rows == 0:
             self._show_overlay(plot, _NO_DATA_TEXT)
+            plot.plot_item.setTitle(f"{tool_id} — {col}")
             return
 
         try:
@@ -352,17 +423,24 @@ class ChartGrid(QWidget):
             high = result.column(f"{col}_max").to_numpy(zero_copy_only=False)
         except (KeyError, pa.ArrowInvalid):
             self._show_overlay(plot, _NO_DATA_TEXT)
+            plot.plot_item.setTitle(f"{tool_id} — {col}")
             return
 
         finite_mask = np.isfinite(avg) if avg.dtype.kind == "f" else None
         if finite_mask is None or not finite_mask.any():
             self._show_overlay(plot, _NO_DATA_TEXT)
+            plot.plot_item.setTitle(f"{tool_id} — {col}")
             return
 
         self._hide_overlay(plot)
         plot.avg_curve.setData(ts, avg)
         plot.low_curve.setData(ts, low)
         plot.high_curve.setData(ts, high)
+
+        if self._mode == "focus":
+            plot.plot_item.setTitle(_focus_title(tool_id, col, low, avg, high, finite_mask))
+        else:
+            plot.plot_item.setTitle(f"{tool_id} — {col}")
 
     def _show_overlay(self, plot: _Plot, text: str, *, error: bool = False) -> None:
         plot.avg_curve.setData([], [])
@@ -381,6 +459,79 @@ class ChartGrid(QWidget):
 
     def _hide_overlay(self, plot: _Plot) -> None:
         plot.overlay.setVisible(False)
+
+    # --- Overview / sparkline rendering ----------------------------------
+
+    def _layout_overview(self, plan: QueryPlan, *, fill_loading: bool) -> None:
+        wanted = self._wanted_keys(plan)
+        wanted_set = set(wanted)
+        self._clear_graphics()
+
+        for key in list(self._sparklines):
+            if key not in wanted_set:
+                stale = self._sparklines.pop(key)
+                self._overview_layout.removeWidget(stale)
+                stale.deleteLater()
+
+        for idx, key in enumerate(wanted):
+            existing = self._sparklines.get(key)
+            if existing is None:
+                tool_id, sensor = key
+                sp = Sparkline(tool_id, sensor)
+                sp.clicked.connect(self._on_sparkline_clicked)
+                self._sparklines[key] = sp
+            else:
+                sp = existing
+            row = idx // _OVERVIEW_COLUMNS
+            col = idx % _OVERVIEW_COLUMNS
+            self._overview_layout.addWidget(sp, row, col)
+            if fill_loading:
+                sp.show_message("Loading…")
+            else:
+                tool_id, _col = key
+                self._apply_sparkline_data(sp, key, self._last_results.get(tool_id))
+
+    def _fill_overview_tool(
+        self, plan: QueryPlan, tool_id: str, result: ToolResult
+    ) -> None:
+        for q in plan.per_tool_queries:
+            if q.tool_id != tool_id:
+                continue
+            for col in q.raw_columns:
+                key = (tool_id, col)
+                sp = self._sparklines.get(key)
+                if sp is not None:
+                    self._apply_sparkline_data(sp, key, result)
+
+    def _apply_sparkline_data(
+        self,
+        sp: Sparkline,
+        key: tuple[str, str],
+        result: ToolResult | None,
+    ) -> None:
+        _tool_id, col = key
+        if isinstance(result, QueryError):
+            sp.show_message(_ERROR_PREFIX + result.message[:40])
+            return
+        if result is None or result.num_rows == 0:
+            sp.show_message(_NO_DATA_TEXT)
+            return
+        try:
+            ts = _arrow_to_seconds(result.column("bucket"))
+            avg = result.column(f"{col}_avg").to_numpy(zero_copy_only=False)
+        except (KeyError, pa.ArrowInvalid):
+            sp.show_message(_NO_DATA_TEXT)
+            return
+        sp.set_data(ts, avg)
+
+    def _clear_overview(self) -> None:
+        for key in list(self._sparklines):
+            sp = self._sparklines.pop(key)
+            self._overview_layout.removeWidget(sp)
+            sp.deleteLater()
+
+    def _on_sparkline_clicked(self, tool_id: str, sensor: str) -> None:
+        self.promoteRequested.emit(tool_id, sensor)
 
     # --- Range / crosshair -----------------------------------------------
 
@@ -426,4 +577,26 @@ def _arrow_to_seconds(column: pa.ChunkedArray) -> np.ndarray:
     return np_array.astype(float)
 
 
-__all__ = ["ChartGrid"]
+def _focus_title(
+    tool_id: str,
+    col: str,
+    low: np.ndarray,
+    avg: np.ndarray,
+    high: np.ndarray,
+    finite_mask: np.ndarray,
+) -> str:
+    """Append a min / mean / max statistics strip to focus-mode plot titles."""
+    finite_low = low[finite_mask] if low.dtype.kind == "f" else low
+    finite_avg = avg[finite_mask]
+    finite_high = high[finite_mask] if high.dtype.kind == "f" else high
+    if finite_avg.size == 0:
+        return f"{tool_id} — {col}"
+    return (
+        f"{tool_id} — {col}    "
+        f"min={float(finite_low.min()):.3g}  "
+        f"mean={float(finite_avg.mean()):.3g}  "
+        f"max={float(finite_high.max()):.3g}"
+    )
+
+
+__all__ = ["ChartGrid", "MAX_VISIBLE_PLOTS", "FOCUS_MAX_PLOTS"]

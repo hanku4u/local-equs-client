@@ -79,6 +79,7 @@ def main() -> None:
         controller,
         update_manager=update_manager,
         download_manager=download_manager,
+        view_controller=view_controller,
     )
     window.show()
     sys.exit(app.exec())
