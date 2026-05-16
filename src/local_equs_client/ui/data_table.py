@@ -173,6 +173,9 @@ class DataTableView(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         layout.addWidget(self._table, stretch=1)
+        self._table.verticalScrollBar().valueChanged.connect(
+            lambda _: self.ensure_row_loaded(self._table.rowAt(0) or 0)
+        )
 
     def set_plan(self, plan: QueryPlan) -> None:
         self._plan = plan
@@ -201,6 +204,26 @@ class DataTableView(QWidget):
         self._model.set_page(offset=0, page=page)
         first = 1 if total > 0 else 0
         last = min(_PAGE_SIZE, total)
+        status = f"Showing {first}–{last} of {total:,} rows"
+        if plan.partial_data_warnings:
+            status += f" (partial data: {'; '.join(plan.partial_data_warnings)})"
+        self.show_normal(status)
+
+    def ensure_row_loaded(self, row: int) -> None:
+        plan = self._plan
+        engine = self._engine
+        if plan is None or engine is None or self._model.rowCount() == 0:
+            return
+        target_offset = (max(0, row) // _PAGE_SIZE) * _PAGE_SIZE
+        if target_offset == self._model._page_offset:  # noqa: SLF001
+            return
+        page = engine.fetch_page(
+            plan, offset=target_offset, limit=_PAGE_SIZE, order=self._order
+        )
+        self._model.set_page(offset=target_offset, page=page)
+        total = self._model.rowCount()
+        first = target_offset + 1
+        last = min(target_offset + _PAGE_SIZE, total)
         status = f"Showing {first}–{last} of {total:,} rows"
         if plan.partial_data_warnings:
             status += f" (partial data: {'; '.join(plan.partial_data_warnings)})"

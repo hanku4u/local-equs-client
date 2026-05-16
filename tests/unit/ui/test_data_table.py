@@ -183,3 +183,24 @@ def test_set_plan_no_mapped_sensors_shows_friendly_status(qapp) -> None:
     view.set_plan(_plan([("a", ())]))  # tool selected but no raw columns
     assert "No mapped sensors" in view.status_text()
     assert engine.count_calls == []
+
+
+def test_scroll_to_offset_triggers_new_page_fetch(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {
+            "tool_id": ["a"] * 3,
+            "ts": ["2026-01-01"] * 3,
+            "chamber_pressure": [1.0, 2.0, 3.0],
+        }
+    )
+    engine = _FakeEngine(count_value=10_000, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+    # Initial fetch.
+    assert engine.fetch_calls == [(engine.count_calls[0], 0, 200, "asc")]
+
+    # Programmatically request a row that lies in a different page.
+    view.ensure_row_loaded(2500)
+
+    # Page index 12 (rows 2400–2599), so offset = 2400.
+    assert engine.fetch_calls[-1] == (engine.count_calls[0], 2400, 200, "asc")
