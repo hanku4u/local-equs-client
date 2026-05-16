@@ -151,11 +151,13 @@ class ChartGrid(QWidget):
         self._graphics_layout.addStretch(1)  # keep plots top-aligned
         self._graphics.setWidget(self._graphics_inner)
         self._stack.addWidget(self._graphics)  # index 0
-        # Plain wheel scrolls the chart stack; Ctrl+wheel still zooms a plot.
+        # Plain wheel scrolls the chart stack; Ctrl+wheel falls through so
+        # pyqtgraph's ViewBox can zoom the time axis. The filter is installed
+        # on each PlotWidget's viewport in _create_plot — that is where Qt
+        # delivers wheel events from a cursor over a plot.
         self._graphics_wheel_filter = _WheelToScrollFilter(
             self._graphics.verticalScrollBar(), parent=self
         )
-        self._graphics.viewport().installEventFilter(self._graphics_wheel_filter)
 
         self._overview_container = QScrollArea()
         self._overview_container.setWidgetResizable(True)
@@ -391,6 +393,7 @@ class ChartGrid(QWidget):
         plot_widget.setMinimumHeight(
             _FOCUS_HEIGHT_HINT if self._mode == "focus" else _PLOT_HEIGHT_HINT
         )
+        plot_widget.viewport().installEventFilter(self._graphics_wheel_filter)
         plot_item = plot_widget.getPlotItem()
         plot_item.setTitle(f"{tool_id} — {col}")
         plot_item.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
@@ -653,10 +656,12 @@ class _WheelToScrollFilter(QObject):
     """Plain wheel scrolls a target ``QScrollBar``; Ctrl+wheel falls through.
 
     Pyqtgraph's ``ViewBox.wheelEvent`` claims the wheel for x-axis zoom, which
-    blocks the chart grid's vertical scrolling. Installing this filter on a
-    viewport above the ViewBoxes intercepts the wheel before it reaches them
-    and forwards it to ``scrollbar.setValue()``. Ctrl-modified wheel events
-    are passed through so users can still zoom the time axis.
+    blocks the chart grid's vertical scrolling. Each ``PlotWidget`` is its own
+    ``QAbstractScrollArea``, so this filter is installed on every
+    ``PlotWidget.viewport()`` — that is where Qt delivers wheel events from a
+    cursor over the plot. Plain wheel forwards to ``scrollbar.setValue()`` and
+    accepts the event; Ctrl-modified events return ``False`` so they continue
+    on to the ViewBox for zoom.
     """
 
     def __init__(self, scrollbar: QScrollBar, parent: QObject | None = None) -> None:
