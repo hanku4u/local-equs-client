@@ -38,15 +38,21 @@ without going through canonical → raw mapping.
 
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTreeWidget,
@@ -64,6 +70,7 @@ from local_equs_client.data_layer.metadata_cache import (
 )
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.selection.types import TimeRange
+from local_equs_client.state.dao import saved_sets as saved_sets_dao
 
 _FILTER_DEBOUNCE_MS = 150
 _TOOL_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -79,9 +86,9 @@ _SENSOR_CANONICAL = "canonical"
 _SENSOR_RAW = "raw"
 _RAW_CATEGORY_LABEL = "All sensors (raw)"
 
-_SAVED_SETS_PLACEHOLDER = "No saved sets yet — coming in M5"
-_SAVE_AS_SET_TOOLTIP = "Coming in M5"
+_SAVE_AS_SET_TOOLTIP = "Save current sensor selection as a named set"
 _DETAIL_EMPTY = "Hover a sensor to see details."
+_SET_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 10
 
 
 class SensorPicker(QWidget):
@@ -92,12 +99,14 @@ class SensorPicker(QWidget):
         selection_model: SelectionModel,
         library: LocalLibrary,
         metadata_cache: MetadataCache,
+        conn: sqlite3.Connection | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._model = selection_model
         self._library = library
         self._cache = metadata_cache
+        self._conn = conn
         self._suppress_push = False
 
         self._build_ui()
@@ -122,17 +131,21 @@ class SensorPicker(QWidget):
         self._clear_btn = QPushButton("Clear all")
         header_row.addWidget(self._clear_btn)
         self._save_as_set_btn = QPushButton("Save as set…")
-        self._save_as_set_btn.setEnabled(False)
+        self._save_as_set_btn.setEnabled(True)
         self._save_as_set_btn.setToolTip(_SAVE_AS_SET_TOOLTIP)
         header_row.addWidget(self._save_as_set_btn)
         outer.addLayout(header_row)
 
-        # C3.6 — Saved sets section (read-only stub)
+        # C5.1 — Saved sets section (full CRUD)
         self._saved_sets_box = QGroupBox("Saved Sets")
         sets_layout = QVBoxLayout(self._saved_sets_box)
-        placeholder = QLabel(_SAVED_SETS_PLACEHOLDER)
-        placeholder.setStyleSheet("color: gray; font-style: italic;")
-        sets_layout.addWidget(placeholder)
+        self._sets_list = QListWidget()
+        self._sets_list.setMaximumHeight(120)
+        self._sets_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        hint = QLabel("Click to load · Shift+click to add · Right-click for options")
+        hint.setStyleSheet("color: gray; font-size: 10px;")
+        sets_layout.addWidget(self._sets_list)
+        sets_layout.addWidget(hint)
         outer.addWidget(self._saved_sets_box)
 
         # C3.4 — Filter / search box
@@ -202,6 +215,9 @@ class SensorPicker(QWidget):
         self._results_list.itemClicked.connect(self._on_result_clicked)
         self._results_list.setMouseTracking(True)
         self._clear_btn.clicked.connect(self._on_clear)
+        self._save_as_set_btn.clicked.connect(self._on_save_as_set)
+        self._sets_list.itemClicked.connect(self._on_set_clicked)
+        self._sets_list.customContextMenuRequested.connect(self._on_sets_context_menu)
 
     # --- Public ----------------------------------------------------------
 
@@ -219,6 +235,7 @@ class SensorPicker(QWidget):
         self._sync_from_model()
         self._apply_filter()
         self._show_detail_empty()
+        self._reload_saved_sets()
 
     # --- Tree construction -----------------------------------------------
 
@@ -485,6 +502,113 @@ class SensorPicker(QWidget):
         finally:
             self._tree.blockSignals(False)
         self._push_to_model()
+
+    # --- Saved sets (C5.1) ------------------------------------------------
+
+    def _reload_saved_sets(self) -> None:
+        self._sets_list.clear()
+        if self._conn is None:
+            return
+        for s in saved_sets_dao.list_all(self._conn):
+            item = QListWidgetItem(s.name)
+            item.setData(_SET_ID_ROLE, s.set_id)
+            self._sets_list.addItem(item)
+
+    def _on_save_as_set(self) -> None:
+        if self._conn is None:
+            return
+        snap = self._model.snapshot()
+        if not snap.tools and not snap.sensors_canonical and not snap.sensors_raw:
+            QMessageBox.information(self, "Save as set", "Nothing selected to save.")
+            return
+        name, ok = QInputDialog.getText(self, "Save as set", "Set name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        try:
+            saved_sets_dao.create(
+                self._conn,
+                name,
+                snap.tools,
+                snap.sensors_canonical,
+                snap.sensors_raw,
+            )
+        except Exception:  # unique constraint or DB error
+            QMessageBox.warning(self, "Save as set", f"A set named '{name}' already exists.")
+            return
+        self._reload_saved_sets()
+
+    def _on_set_clicked(self, item: QListWidgetItem) -> None:
+        if self._conn is None:
+            return
+        set_id = int(item.data(_SET_ID_ROLE))
+        sets = {s.set_id: s for s in saved_sets_dao.list_all(self._conn)}
+        s = sets.get(set_id)
+        if s is None:
+            return
+        shift_held = bool(
+            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
+        )
+        if shift_held:
+            merged_tools = tuple(sorted(set(self._model.tools) | set(s.tools)))
+            merged_canonicals = tuple(
+                sorted(set(self._model.sensors_canonical) | set(s.sensors_canonical))
+            )
+            merged_raws = tuple(sorted(set(self._model.sensors_raw) | set(s.sensors_raw)))
+            self._model.set_tools(merged_tools)
+            self._model.set_sensors_canonical(merged_canonicals)
+            self._model.set_sensors_raw(merged_raws)
+        else:
+            self._model.set_tools(s.tools)
+            self._model.set_sensors_canonical(s.sensors_canonical)
+            self._model.set_sensors_raw(s.sensors_raw)
+
+    def _on_sets_context_menu(self, pos) -> None:  # type: ignore[no-untyped-def]
+        if self._conn is None:
+            return
+        item = self._sets_list.itemAt(pos)
+        if item is None:
+            return
+        set_id = int(item.data(_SET_ID_ROLE))
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename…")
+        delete_action = menu.addAction("Delete")
+        chosen = menu.exec(self._sets_list.viewport().mapToGlobal(pos))
+        if chosen is rename_action:
+            self._rename_set(set_id, item.text())
+        elif chosen is delete_action:
+            self._delete_set(set_id, item.text())
+
+    def _rename_set(self, set_id: int, current_name: str) -> None:
+        if self._conn is None:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename set", "New name:", text=current_name
+        )
+        if not ok or not new_name.strip() or new_name.strip() == current_name:
+            return
+        try:
+            saved_sets_dao.rename(self._conn, set_id, new_name.strip())
+        except Exception:
+            QMessageBox.warning(
+                self, "Rename set", f"A set named '{new_name.strip()}' already exists."
+            )
+            return
+        self._reload_saved_sets()
+
+    def _delete_set(self, set_id: int, name: str) -> None:
+        if self._conn is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete set",
+            f"Delete saved set '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        saved_sets_dao.delete(self._conn, set_id)
+        self._reload_saved_sets()
 
     def _set_all_checked(self, state: Qt.CheckState) -> None:
         for tool_idx in range(self._tree.topLevelItemCount()):

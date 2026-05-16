@@ -11,6 +11,7 @@ Window geometry, splitter sizes, and dock state persist via ``QSettings``.
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QCloseEvent
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         update_manager: UpdateManager | None = None,
         download_manager: DownloadManager | None = None,
         view_controller: ViewController | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
         super().__init__()
         self._model = selection_model
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self._update_manager = update_manager
         self._download_manager = download_manager
         self._view_controller = view_controller
+        self._conn = conn
         self._qsettings = QSettings("LocalEQUS", "Client")
 
         self.setWindowTitle("Local EQUS")
@@ -94,7 +97,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(self._view_mode_bar)
 
         self._splitter = QSplitter()
-        self._picker = SensorPicker(self._model, self._library, self._cache)
+        self._picker = SensorPicker(self._model, self._library, self._cache, conn=self._conn)
         self._splitter.addWidget(self._picker)
 
         self._chart_grid = ChartGrid()
