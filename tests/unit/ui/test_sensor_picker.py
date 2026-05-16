@@ -461,31 +461,112 @@ def test_hovering_a_category_does_not_change_detail(qapp, picker_env) -> None:
     assert picker._detail_name.text() == initial  # noqa: SLF001
 
 
-# --- C3.6: saved sets stub ------------------------------------------------
+# --- C3.6: saved sets section -----------------------------------------------
 
 
-def test_saved_sets_section_visible_with_placeholder(qapp, picker_env) -> None:
+def test_saved_sets_section_visible(qapp, picker_env) -> None:
     library, cache, _conn, _data_dir = picker_env
     picker = SensorPicker(SelectionModel(), library, cache)
-    box = picker._saved_sets_box  # noqa: SLF001
-    assert box.isVisible() or not box.isHidden()
-    # The placeholder QLabel is the only child widget besides the box title.
-    children = box.findChildren(type(picker._count_label))  # noqa: SLF001 — QLabel
-    texts = [c.text() for c in children]
-    assert any("M5" in t for t in texts)
+    assert picker._saved_sets_box.isVisible() or not picker._saved_sets_box.isHidden()  # noqa: SLF001
 
 
-# --- C3.7: Selected (N) header --------------------------------------------
+# --- C3.7: Selected (N) header -----------------------------------------------
 
 
-def test_save_as_set_button_disabled_with_m5_tooltip(qapp, picker_env) -> None:
+def test_save_as_set_button_enabled(qapp, picker_env) -> None:
     library, cache, _conn, _data_dir = picker_env
     picker = SensorPicker(SelectionModel(), library, cache)
-    assert not picker._save_as_set_btn.isEnabled()  # noqa: SLF001
-    assert "M5" in picker._save_as_set_btn.toolTip()  # noqa: SLF001
+    # Button is enabled — no longer a M5 stub
+    assert picker._save_as_set_btn.isEnabled()  # noqa: SLF001
 
 
 def test_header_count_label_starts_at_zero(qapp, picker_env) -> None:
     library, cache, _conn, _data_dir = picker_env
     picker = SensorPicker(SelectionModel(), library, cache)
     assert picker._count_label.text() == "Selected (0)"  # noqa: SLF001
+
+
+# --- C5.1: Saved Sets full CRUD -------------------------------------------
+
+
+def test_saved_set_appears_in_list_after_save(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    model = SelectionModel()
+    picker = SensorPicker(model, library, cache, conn=conn)
+
+    # Simulate a selection in the model
+    model.set_tools(("etch_a1",))
+    model.set_sensors_canonical(("chamber_pressure",))
+
+    # Directly call the internal save method to bypass the dialog
+    from local_equs_client.state.dao import saved_sets as dao
+
+    dao.create(conn, "My Set", ("etch_a1",), ("chamber_pressure",), ())
+    picker._reload_saved_sets()  # noqa: SLF001
+
+    assert picker._sets_list.count() == 1  # noqa: SLF001
+    assert picker._sets_list.item(0).text() == "My Set"  # noqa: SLF001
+
+
+def test_clicking_set_replaces_selection(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_a1.parquet")
+    library.scan()
+    _seed_metadata(conn)
+
+    from local_equs_client.state.dao import saved_sets as dao
+
+    dao.create(conn, "Preset", ("etch_a1",), ("rf_power",), ())
+
+    model = SelectionModel()
+    model.set_tools(("etch_a1",))
+    model.set_sensors_canonical(("chamber_pressure",))
+
+    picker = SensorPicker(model, library, cache, conn=conn)
+    item = picker._sets_list.item(0)  # noqa: SLF001
+    assert item is not None
+
+    # Simulate plain click (no shift)
+    picker._on_set_clicked(item)  # noqa: SLF001
+
+    assert model.sensors_canonical == ("rf_power",)
+    assert model.tools == ("etch_a1",)
+
+
+def test_delete_set_removes_from_list(qapp, picker_env) -> None:
+    library, cache, conn, data_dir = picker_env
+
+    from local_equs_client.state.dao import saved_sets as dao
+
+    dao.create(conn, "Temp", ("t1",), (), ())
+
+    model = SelectionModel()
+    picker = SensorPicker(model, library, cache, conn=conn)
+    assert picker._sets_list.count() == 1  # noqa: SLF001
+
+    set_id = picker._sets_list.item(0).data(  # type: ignore[union-attr]  # noqa: SLF001
+        int(Qt.ItemDataRole.UserRole) + 10  # _SET_ID_ROLE
+    )
+    dao.delete(conn, set_id)
+    picker._reload_saved_sets()  # noqa: SLF001
+
+    assert picker._sets_list.count() == 0  # noqa: SLF001
+
+
+def test_reload_reflects_db_state(qapp, picker_env) -> None:
+    library, cache, conn, _data_dir = picker_env
+
+    from local_equs_client.state.dao import saved_sets as dao
+
+    picker = SensorPicker(SelectionModel(), library, cache, conn=conn)
+    assert picker._sets_list.count() == 0  # noqa: SLF001
+
+    dao.create(conn, "Late Add", ("t1",), (), ())
+    picker._reload_saved_sets()  # noqa: SLF001
+
+    assert picker._sets_list.count() == 1  # noqa: SLF001
+
