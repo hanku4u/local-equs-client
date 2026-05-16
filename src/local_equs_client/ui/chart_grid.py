@@ -1,4 +1,4 @@
-"""PyQtGraph-based linked chart grid (C1.10, C1.11, C1.12, C1.13, C4.4, C4.6, C4.7, C4.8).
+"""PyQtGraph-based linked chart grid (C1.10–C1.13, C4.4, C4.6–C4.8, C4.10).
 
 One PlotItem per ``(tool_id, raw_column)`` pair in standard / focus mode.
 Avg drawn as a solid line, min/max as a faint fill band. All x-axes linked
@@ -22,6 +22,9 @@ sparkline is a click-to-promote button that flips back to focus mode.
 
 C4.8: focus mode caps at four enlarged charts; each plot title carries a
 ``min/mean/max`` statistics strip computed from the visible range.
+
+C4.10: the cap banner carries a "Switch to Overview" button and escalates
+to an "Are you sure?" message above ``OVERVIEW_ESCALATION_THRESHOLD``.
 """
 
 from __future__ import annotations
@@ -34,8 +37,11 @@ import pyarrow as pa
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -56,9 +62,22 @@ _NO_DATA_TEXT = "No data in range"
 _LOADING_TEXT = "Loading…"
 _ERROR_PREFIX = "Tool error: "
 _BANNER_TEMPLATE = (
-    "Showing {shown} of {total} charts. Switch to overview mode for the full grid."
+    "Showing {shown} of {total} charts. Overview mode renders the full grid."
+)
+_BANNER_ESCALATION_TEMPLATE = (
+    "Are you sure? {total} charts may overwhelm the standard grid — "
+    "only {shown} are drawn here."
+)
+_BANNER_WARNING_STYLE = (
+    "background-color: rgb(60, 50, 20); color: rgb(255, 220, 140);"
+    "padding: 6px 8px;"
+)
+_BANNER_ESCALATION_STYLE = (
+    "background-color: rgb(80, 30, 25); color: rgb(255, 200, 190);"
+    "padding: 6px 8px;"
 )
 MAX_VISIBLE_PLOTS = 50
+OVERVIEW_ESCALATION_THRESHOLD = 200  # C4.10
 FOCUS_MAX_PLOTS = 4  # C4.8 cap
 _OVERVIEW_COLUMNS = 5
 
@@ -84,6 +103,7 @@ class ChartGrid(QWidget):
     rangeChangedByUser = Signal(object)  # emits a TimeRange
     visibleToolsChanged = Signal(object)  # C4.5: list[str] of tool ids currently visible
     promoteRequested = Signal(str, str)  # C4.7: (tool_id, sensor) clicked in overview
+    switchToOverviewRequested = Signal()  # C4.10: banner "Switch to Overview" button
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -97,12 +117,18 @@ class ChartGrid(QWidget):
         )
         layout.addWidget(self._progress_label)
 
-        self._cap_banner = QLabel("")
+        self._cap_banner = QFrame()
         self._cap_banner.setVisible(False)
-        self._cap_banner.setStyleSheet(
-            "background-color: rgb(60, 50, 20); color: rgb(255, 220, 140);"
-            "padding: 6px 8px;"
-        )
+        self._cap_banner.setStyleSheet(_BANNER_WARNING_STYLE)
+        banner_layout = QHBoxLayout(self._cap_banner)
+        banner_layout.setContentsMargins(0, 0, 0, 0)
+        banner_layout.setSpacing(8)
+        self._cap_banner_label = QLabel("")
+        self._cap_banner_label.setWordWrap(True)
+        banner_layout.addWidget(self._cap_banner_label, stretch=1)
+        self._cap_banner_button = QPushButton("Switch to Overview")
+        self._cap_banner_button.clicked.connect(self.switchToOverviewRequested.emit)
+        banner_layout.addWidget(self._cap_banner_button)
         layout.addWidget(self._cap_banner)
 
         self._stack = QStackedWidget()
@@ -143,6 +169,7 @@ class ChartGrid(QWidget):
         self._stack.setCurrentIndex(
             _STACK_OVERVIEW if mode == "overview" else _STACK_GRAPHICS
         )
+        self._update_cap_banner(self._last_plan)
         if self._last_plan is not None:
             self._rerender_from_cache()
 
@@ -254,20 +281,27 @@ class ChartGrid(QWidget):
         self._progress_label.setVisible(True)
 
     def _update_cap_banner(self, plan: QueryPlan | None) -> None:
-        if plan is None:
+        if plan is None or self._mode == "overview":
             self._cap_banner.setVisible(False)
             return
         total = sum(len(q.raw_columns) for q in plan.per_tool_queries)
         cap_active = (
             FOCUS_MAX_PLOTS if self._mode == "focus" else MAX_VISIBLE_PLOTS
         )
-        if self._mode != "overview" and total > cap_active:
-            self._cap_banner.setText(
+        if total <= cap_active:
+            self._cap_banner.setVisible(False)
+            return
+        if total > OVERVIEW_ESCALATION_THRESHOLD:
+            self._cap_banner_label.setText(
+                _BANNER_ESCALATION_TEMPLATE.format(shown=cap_active, total=total)
+            )
+            self._cap_banner.setStyleSheet(_BANNER_ESCALATION_STYLE)
+        else:
+            self._cap_banner_label.setText(
                 _BANNER_TEMPLATE.format(shown=cap_active, total=total)
             )
-            self._cap_banner.setVisible(True)
-        else:
-            self._cap_banner.setVisible(False)
+            self._cap_banner.setStyleSheet(_BANNER_WARNING_STYLE)
+        self._cap_banner.setVisible(True)
 
     def _emit_visible_tools(self) -> None:
         self.visibleToolsChanged.emit(self.visible_tool_ids())
