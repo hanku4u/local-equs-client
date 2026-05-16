@@ -1,10 +1,11 @@
 """PyQtGraph-based linked chart grid (C1.10–C1.13, C4.4, C4.6–C4.8, C4.10).
 
-One PlotItem per ``(tool_id, raw_column)`` pair in standard / focus mode.
-Avg drawn as a solid line, min/max as a faint fill band. All x-axes linked
-through the anchor plot and a synchronized vertical crosshair tracks the
-mouse across the whole grid. Updates flow through ``setData()`` so the
-existing curves keep their identity.
+One ``pg.PlotWidget`` per ``(tool_id, raw_column)`` pair in standard / focus
+mode, stacked vertically inside a ``QScrollArea`` so the grid overflows when
+many plots are selected. Avg drawn as a solid line, min/max as a faint fill
+band. All x-axes linked through the anchor plot and a synchronized vertical
+crosshair tracks the mouse across every visible plot. Updates flow through
+``setData()`` so the existing curves keep their identity.
 
 C1.11: pan/zoom fires :attr:`rangeChangedByUser`.
 C1.12: ``QueryError`` payloads render a red "Tool error" overlay.
@@ -35,7 +36,7 @@ from datetime import UTC, datetime
 import numpy as np
 import pyarrow as pa
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, Signal
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -89,6 +90,7 @@ _STACK_OVERVIEW = 1
 
 @dataclass(slots=True)
 class _Plot:
+    plot_widget: pg.PlotWidget
     plot_item: pg.PlotItem
     avg_curve: pg.PlotDataItem
     low_curve: pg.PlotDataItem
@@ -136,7 +138,18 @@ class ChartGrid(QWidget):
         self._stack = QStackedWidget()
         layout.addWidget(self._stack, stretch=1)
 
-        self._graphics = pg.GraphicsLayoutWidget()
+        # Standard / focus mode: each plot is its own pg.PlotWidget stacked in
+        # a QVBoxLayout inside a QScrollArea. This gives every plot its honest
+        # minimum height and lets the QScrollArea overflow naturally when the
+        # stack outgrows the viewport.
+        self._graphics = QScrollArea()
+        self._graphics.setWidgetResizable(True)
+        self._graphics_inner = QWidget()
+        self._graphics_layout = QVBoxLayout(self._graphics_inner)
+        self._graphics_layout.setContentsMargins(0, 0, 0, 0)
+        self._graphics_layout.setSpacing(4)
+        self._graphics_layout.addStretch(1)  # keep plots top-aligned
+        self._graphics.setWidget(self._graphics_inner)
         self._stack.addWidget(self._graphics)  # index 0
         # Plain wheel scrolls the chart stack; Ctrl+wheel still zooms a plot.
         self._graphics_wheel_filter = _WheelToScrollFilter(
@@ -167,7 +180,6 @@ class ChartGrid(QWidget):
         self._last_plan: QueryPlan | None = None
         self._last_results: dict[str, ToolResult] = {}
 
-        self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._graphics.verticalScrollBar().valueChanged.connect(self._emit_visible_tools)
 
     # --- Public API -------------------------------------------------------
@@ -242,15 +254,18 @@ class ChartGrid(QWidget):
             return sorted({k[0] for k in self._sparklines})
         if not self._plots:
             return []
-        view_rect = self._graphics.viewport().rect()
-        scene_view = self._graphics.mapToScene(view_rect).boundingRect()
+        viewport = self._graphics.viewport()
+        viewport_rect = viewport.rect()
         ordered: list[str] = []
         seen: set[str] = set()
         for (tool_id, _col), plot in self._plots.items():
+            widget = plot.plot_widget
             try:
-                if not plot.plot_item.sceneBoundingRect().intersects(scene_view):
-                    continue
+                top_left = widget.mapTo(viewport, QPoint(0, 0))
             except RuntimeError:
+                continue
+            widget_rect = QRect(top_left, widget.size())
+            if not widget_rect.intersects(viewport_rect):
                 continue
             if tool_id in seen:
                 continue
@@ -370,17 +385,15 @@ class ChartGrid(QWidget):
 
     def _create_plot(self, key: tuple[str, str]) -> _Plot:
         tool_id, col = key
-        row_index = len(self._plots)
-        plot_item = self._graphics.addPlot(
-            row=row_index,
-            col=0,
-            axisItems={"bottom": pg.DateAxisItem(orientation="bottom")},
-            title=f"{tool_id} — {col}",
+        plot_widget = pg.PlotWidget(
+            axisItems={"bottom": pg.DateAxisItem(orientation="bottom")}
         )
-        plot_item.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
-        plot_item.setMinimumHeight(
+        plot_widget.setMinimumHeight(
             _FOCUS_HEIGHT_HINT if self._mode == "focus" else _PLOT_HEIGHT_HINT
         )
+        plot_item = plot_widget.getPlotItem()
+        plot_item.setTitle(f"{tool_id} — {col}")
+        plot_item.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         plot_item.setMouseEnabled(x=True, y=False)
         plot_item.disableAutoRange(axis="x")
 
@@ -408,7 +421,19 @@ class ChartGrid(QWidget):
         overlay.setVisible(False)
         plot_item.addItem(overlay, ignoreBounds=True)
 
+        # Each PlotWidget has its own scene; bind the source plot key into
+        # the slot so the crosshair can map scene coords to view coords.
+        plot_widget.scene().sigMouseMoved.connect(
+            lambda pos, k=key: self._on_mouse_moved(k, pos)
+        )
+
+        # Insert before the trailing stretch so plots stay top-aligned.
+        self._graphics_layout.insertWidget(
+            self._graphics_layout.count() - 1, plot_widget
+        )
+
         return _Plot(
+            plot_widget=plot_widget,
             plot_item=plot_item,
             avg_curve=avg,
             low_curve=low,
@@ -434,7 +459,9 @@ class ChartGrid(QWidget):
         if plot.plot_item is self._anchor_plot:
             self._disconnect_range_signal(plot.plot_item)
             self._anchor_plot = None
-        self._graphics.removeItem(plot.plot_item)
+        self._graphics_layout.removeWidget(plot.plot_widget)
+        plot.plot_widget.setParent(None)
+        plot.plot_widget.deleteLater()
         if self._anchor_plot is None and self._plots:
             new_anchor = next(iter(self._plots.values())).plot_item
             self._anchor_plot = new_anchor
@@ -596,17 +623,17 @@ class ChartGrid(QWidget):
         )
         self.rangeChangedByUser.emit(new_range)
 
-    def _on_mouse_moved(self, scene_pos: QPointF) -> None:
-        if not self._plots:
+    def _on_mouse_moved(
+        self, source_key: tuple[str, str], scene_pos: QPointF
+    ) -> None:
+        source = self._plots.get(source_key)
+        if source is None or not self._plots:
             return
-        anchor = self._anchor_plot
-        if anchor is None:
-            return
-        if not anchor.sceneBoundingRect().contains(scene_pos):
+        if not source.plot_item.sceneBoundingRect().contains(scene_pos):
             for plot in self._plots.values():
                 plot.vline.setVisible(False)
             return
-        view_pos = anchor.vb.mapSceneToView(scene_pos)
+        view_pos = source.plot_item.vb.mapSceneToView(scene_pos)
         x = view_pos.x()
         for plot in self._plots.values():
             plot.vline.setPos(x)

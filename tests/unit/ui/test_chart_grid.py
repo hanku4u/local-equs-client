@@ -518,3 +518,52 @@ def test_overview_wheel_filter_scrolls_overview_container(qapp) -> None:
 
     assert accepted is True
     assert scrollbar.value() < 50
+
+
+# --- Scrollable layout architecture --------------------------------------
+
+
+def test_standard_mode_uses_qscrollarea_with_plotwidgets(qapp) -> None:
+    """Each plot is its own pg.PlotWidget in a QVBoxLayout under a QScrollArea."""
+    import pyqtgraph as pg
+    from PySide6.QtWidgets import QScrollArea
+
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",)), ("b", ("c",))])
+    grid.on_plan_ready(plan)
+
+    assert isinstance(grid._graphics, QScrollArea)  # noqa: SLF001
+    assert all(  # noqa: SLF001
+        isinstance(p.plot_widget, pg.PlotWidget) for p in grid._plots.values()
+    )
+
+
+def test_each_plot_widget_added_to_inner_layout(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",)), ("b", ("c",)), ("c", ("c",))])
+    grid.on_plan_ready(plan)
+
+    inner_widgets = {
+        grid._graphics_layout.itemAt(i).widget()  # noqa: SLF001
+        for i in range(grid._graphics_layout.count())  # noqa: SLF001
+    }
+    inner_widgets.discard(None)
+    plot_widgets = {p.plot_widget for p in grid._plots.values()}  # noqa: SLF001
+    assert plot_widgets.issubset(inner_widgets)
+
+
+def test_removed_plot_widgets_are_dropped_from_layout(qapp) -> None:
+    grid = ChartGrid()
+    grid.update_from_results(
+        _make_plan([("a", ("c",)), ("b", ("c",))]),
+        {"a": _make_results(columns=("c",)), "b": _make_results(columns=("c",))},
+    )
+    layout = grid._graphics_layout  # noqa: SLF001
+    before = layout.count()
+
+    grid.update_from_results(
+        _make_plan([("a", ("c",))]),
+        {"a": _make_results(columns=("c",))},
+    )
+    # One plot widget removed (the layout always has a trailing stretch).
+    assert layout.count() == before - 1
