@@ -35,7 +35,8 @@ from datetime import UTC, datetime
 import numpy as np
 import pyarrow as pa
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QScrollBar,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -136,6 +138,11 @@ class ChartGrid(QWidget):
 
         self._graphics = pg.GraphicsLayoutWidget()
         self._stack.addWidget(self._graphics)  # index 0
+        # Plain wheel scrolls the chart stack; Ctrl+wheel still zooms a plot.
+        self._graphics_wheel_filter = _WheelToScrollFilter(
+            self._graphics.verticalScrollBar(), parent=self
+        )
+        self._graphics.viewport().installEventFilter(self._graphics_wheel_filter)
 
         self._overview_container = QScrollArea()
         self._overview_container.setWidgetResizable(True)
@@ -145,6 +152,10 @@ class ChartGrid(QWidget):
         self._overview_layout.setSpacing(6)
         self._overview_container.setWidget(self._overview_inner)
         self._stack.addWidget(self._overview_container)  # index 1
+        self._overview_wheel_filter = _WheelToScrollFilter(
+            self._overview_container.verticalScrollBar(), parent=self
+        )
+        self._overview_container.viewport().installEventFilter(self._overview_wheel_filter)
 
         self._mode: ViewMode = "standard"
         self._plots: dict[tuple[str, str], _Plot] = {}
@@ -609,6 +620,33 @@ def _arrow_to_seconds(column: pa.ChunkedArray) -> np.ndarray:
         seconds: np.ndarray = np_array.astype("datetime64[ns]").astype("int64") / 1e9
         return seconds
     return np_array.astype(float)
+
+
+class _WheelToScrollFilter(QObject):
+    """Plain wheel scrolls a target ``QScrollBar``; Ctrl+wheel falls through.
+
+    Pyqtgraph's ``ViewBox.wheelEvent`` claims the wheel for x-axis zoom, which
+    blocks the chart grid's vertical scrolling. Installing this filter on a
+    viewport above the ViewBoxes intercepts the wheel before it reaches them
+    and forwards it to ``scrollbar.setValue()``. Ctrl-modified wheel events
+    are passed through so users can still zoom the time axis.
+    """
+
+    def __init__(self, scrollbar: QScrollBar, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._scrollbar = scrollbar
+
+    def eventFilter(self, _obj: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.Wheel or not isinstance(event, QWheelEvent):
+            return False
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            return False
+        delta = event.angleDelta().y() or event.pixelDelta().y()
+        if delta == 0:
+            return False
+        self._scrollbar.setValue(self._scrollbar.value() - delta)
+        event.accept()
+        return True
 
 
 def _focus_title(

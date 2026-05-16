@@ -445,3 +445,76 @@ def test_standard_mode_title_is_plain(qapp) -> None:
 
     title = grid._plots[("a", "c")].plot_item.titleLabel.text  # noqa: SLF001
     assert "min=" not in title
+
+
+# --- Wheel-to-scroll filter ----------------------------------------------
+
+
+def _make_wheel_event(*, delta_y: int, ctrl: bool = False):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    modifiers = (
+        Qt.KeyboardModifier.ControlModifier
+        if ctrl
+        else Qt.KeyboardModifier.NoModifier
+    )
+    return QWheelEvent(
+        QPointF(0, 0),
+        QPointF(0, 0),
+        QPoint(0, 0),
+        QPoint(0, delta_y),
+        Qt.MouseButton.NoButton,
+        modifiers,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_plain_wheel_scrolls_graphics_view(qapp) -> None:
+    grid = ChartGrid()
+    # Seed plots so the viewport is taller than the visible area would be.
+    plan = _make_plan([(f"t{i}", ("c",)) for i in range(20)])
+    grid.on_plan_ready(plan)
+    scrollbar = grid._graphics.verticalScrollBar()  # noqa: SLF001
+    scrollbar.setRange(0, 1000)
+    scrollbar.setValue(100)
+
+    accepted = grid._graphics_wheel_filter.eventFilter(  # noqa: SLF001
+        grid._graphics.viewport(), _make_wheel_event(delta_y=120)
+    )
+
+    assert accepted is True
+    assert scrollbar.value() == 100 - 120 or scrollbar.value() == max(0, 100 - 120)
+
+
+def test_ctrl_wheel_falls_through_for_zoom(qapp) -> None:
+    grid = ChartGrid()
+    plan = _make_plan([("a", ("c",))])
+    grid.on_plan_ready(plan)
+    scrollbar = grid._graphics.verticalScrollBar()  # noqa: SLF001
+    before = scrollbar.value()
+
+    accepted = grid._graphics_wheel_filter.eventFilter(  # noqa: SLF001
+        grid._graphics.viewport(), _make_wheel_event(delta_y=120, ctrl=True)
+    )
+
+    assert accepted is False
+    assert scrollbar.value() == before
+
+
+def test_overview_wheel_filter_scrolls_overview_container(qapp) -> None:
+    grid = ChartGrid()
+    grid.set_mode("overview")
+    plan = _make_plan([(f"t{i}", ("c",)) for i in range(20)])
+    grid.on_plan_ready(plan)
+    scrollbar = grid._overview_container.verticalScrollBar()  # noqa: SLF001
+    scrollbar.setRange(0, 1000)
+    scrollbar.setValue(50)
+
+    accepted = grid._overview_wheel_filter.eventFilter(  # noqa: SLF001
+        grid._overview_container.viewport(), _make_wheel_event(delta_y=60)
+    )
+
+    assert accepted is True
+    assert scrollbar.value() < 50
