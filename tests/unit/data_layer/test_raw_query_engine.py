@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery
 from local_equs_client.data_layer.raw_query_engine import RawQueryEngine
@@ -200,3 +201,45 @@ def test_fetch_page_multi_tool_with_null_padding(tmp_path: Path) -> None:
     assert a_rows and b_rows
     assert all(r["rf_power"] is None for r in a_rows)
     assert all(r["rf_power"] is not None for r in b_rows)
+
+
+def test_cancelled_during_count_raises(tmp_path: Path) -> None:
+    from local_equs_client.data_layer.raw_query_engine import QueryCancelled
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    _write_parquet(parquet, start=start, n_rows=10, hz=10)
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            )
+        ]
+    )
+    engine = RawQueryEngine()
+    with pytest.raises(QueryCancelled):
+        engine.count(plan, cancelled=lambda: True)
+
+
+def test_cancelled_during_fetch_page_raises(tmp_path: Path) -> None:
+    from local_equs_client.data_layer.raw_query_engine import QueryCancelled
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    _write_parquet(parquet, start=start, n_rows=10, hz=10)
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            )
+        ]
+    )
+    engine = RawQueryEngine()
+    with pytest.raises(QueryCancelled):
+        engine.fetch_page(plan, offset=0, limit=5, cancelled=lambda: True)
