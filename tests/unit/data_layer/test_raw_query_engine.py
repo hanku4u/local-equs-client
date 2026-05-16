@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery
 from local_equs_client.data_layer.raw_query_engine import RawQueryEngine
@@ -116,3 +115,88 @@ def test_fetch_page_returns_rows_ordered_asc(tmp_path: Path) -> None:
     assert table.column_names == ["tool_id", "ts", "chamber_pressure"]
     ts_seconds = table.column("ts").to_pylist()
     assert ts_seconds == sorted(ts_seconds)  # ASC
+
+
+def test_fetch_page_offset_returns_correct_slice(tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    _write_parquet(parquet, start=start, n_rows=100, hz=10)
+
+    engine = RawQueryEngine()
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=10)),
+            )
+        ]
+    )
+    page0 = engine.fetch_page(plan, offset=0, limit=20).to_pylist()
+    page1 = engine.fetch_page(plan, offset=20, limit=20).to_pylist()
+    # Last row of page 0 strictly before the first row of page 1 by ts.
+    assert page0[-1]["ts"] < page1[0]["ts"]
+    assert len(page0) == 20
+    assert len(page1) == 20
+
+
+def test_fetch_page_desc_reverses_order(tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    _write_parquet(parquet, start=start, n_rows=50, hz=10)
+
+    engine = RawQueryEngine()
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            )
+        ]
+    )
+    table = engine.fetch_page(plan, offset=0, limit=10, order="desc")
+    ts = table.column("ts").to_pylist()
+    assert ts == sorted(ts, reverse=True)
+
+
+def test_fetch_page_multi_tool_with_null_padding(tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    p_a = tmp_path / "a.parquet"
+    p_b = tmp_path / "b.parquet"
+    _write_parquet(p_a, start=start, n_rows=20, hz=10, sensor_columns=("chamber_pressure",))
+    _write_parquet(
+        p_b,
+        start=start,
+        n_rows=20,
+        hz=10,
+        sensor_columns=("chamber_pressure", "rf_power"),
+    )
+
+    engine = RawQueryEngine()
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(p_a,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            ),
+            ToolQuery(
+                tool_id="b",
+                file_paths=(p_b,),
+                raw_columns=("chamber_pressure", "rf_power"),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            ),
+        ]
+    )
+    table = engine.fetch_page(plan, offset=0, limit=100)
+    assert table.column_names == ["tool_id", "ts", "chamber_pressure", "rf_power"]
+    rows = table.to_pylist()
+    a_rows = [r for r in rows if r["tool_id"] == "a"]
+    b_rows = [r for r in rows if r["tool_id"] == "b"]
+    assert a_rows and b_rows
+    assert all(r["rf_power"] is None for r in a_rows)
+    assert all(r["rf_power"] is not None for r in b_rows)
