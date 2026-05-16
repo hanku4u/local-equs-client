@@ -78,12 +78,37 @@ class _PagedRawValuesModel(QAbstractTableModel):
             return section + 1
         return None
 
+    def set_page(self, *, offset: int, page: pa.Table) -> None:
+        """Install a freshly fetched page; emit dataChanged for its row range."""
+        self._page_offset = max(0, int(offset))
+        self._page = page
+        if page.num_rows == 0 or not self._columns:
+            return
+        last = self._page_offset + page.num_rows - 1
+        if last >= self._total:
+            last = self._total - 1
+        top_left = self.index(self._page_offset, 0)
+        bottom_right = self.index(last, len(self._columns) - 1)
+        self.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
+
     def data(
         self,
         index: QModelIndex | QPersistentModelIndex,
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> object:
-        return None  # Filled in Task 7.
+        if role != Qt.ItemDataRole.DisplayRole or not index.isValid():
+            return None
+        if self._page is None or self._page_offset is None:
+            return _PLACEHOLDER
+        row = index.row()
+        local_row = row - self._page_offset
+        if local_row < 0 or local_row >= self._page.num_rows:
+            return _PLACEHOLDER
+        col_name = self._columns[index.column()]
+        if col_name not in self._page.column_names:
+            return _PLACEHOLDER
+        value = self._page.column(col_name)[local_row].as_py()
+        return "" if value is None else str(value)
 
 
 __all__ = ["_PagedRawValuesModel"]

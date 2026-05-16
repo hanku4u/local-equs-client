@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pyarrow as pa  # noqa: F401  # pre-staged for Task 7 set_page tests
+import pyarrow as pa
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
@@ -33,3 +33,59 @@ def test_set_total_count_updates_row_count(qapp) -> None:
     model.set_columns(("tool_id", "ts"))
     model.set_total_count(1234)
     assert model.rowCount() == 1234
+
+
+def _table(rows: list[dict[str, object]]) -> pa.Table:
+    by_col: dict[str, list[object]] = {}
+    for r in rows:
+        for k, v in r.items():
+            by_col.setdefault(k, []).append(v)
+    return pa.Table.from_pydict(by_col)
+
+
+def test_data_inside_loaded_page_returns_cell(qapp) -> None:
+    model = _PagedRawValuesModel()
+    model.set_columns(("tool_id", "ts", "chamber_pressure"))
+    model.set_total_count(500)
+    model.set_page(
+        offset=0,
+        page=_table(
+            [
+                {"tool_id": "a", "ts": "2026-01-01 00:00:00", "chamber_pressure": 1.5},
+                {"tool_id": "a", "ts": "2026-01-01 00:00:01", "chamber_pressure": 2.5},
+            ]
+        ),
+    )
+    idx = model.index(0, 2)
+    assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "1.5"
+
+
+def test_data_outside_loaded_page_returns_placeholder(qapp) -> None:
+    model = _PagedRawValuesModel()
+    model.set_columns(("tool_id", "ts"))
+    model.set_total_count(500)
+    model.set_page(
+        offset=0,
+        page=_table([{"tool_id": "a", "ts": "2026-01-01 00:00:00"}]),
+    )
+    idx = model.index(400, 0)  # outside the loaded page
+    assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "…"
+
+
+def test_set_page_emits_dataChanged_for_page_range(qapp) -> None:
+    model = _PagedRawValuesModel()
+    model.set_columns(("tool_id", "ts"))
+    model.set_total_count(500)
+    captured: list[tuple[int, int]] = []
+    model.dataChanged.connect(
+        lambda tl, br, _roles=None: captured.append((tl.row(), br.row()))
+    )
+    model.set_page(
+        offset=200,
+        page=_table(
+            [
+                {"tool_id": "a", "ts": f"2026-01-01 00:00:{i:02d}"} for i in range(50)
+            ]
+        ),
+    )
+    assert captured == [(200, 249)]
