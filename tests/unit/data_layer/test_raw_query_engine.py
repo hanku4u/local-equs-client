@@ -93,3 +93,26 @@ def test_count_multi_tool_sums_across_tools(tmp_path: Path) -> None:
         ]
     )
     assert engine.count(plan) == 100  # 50 per tool
+
+
+def test_fetch_page_returns_rows_ordered_asc(tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    _write_parquet(parquet, start=start, n_rows=100, hz=10)
+
+    engine = RawQueryEngine()
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            )
+        ]
+    )
+    table = engine.fetch_page(plan, offset=0, limit=10)
+    assert table.num_rows == 10
+    assert table.column_names == ["tool_id", "ts", "chamber_pressure"]
+    ts_seconds = table.column("ts").to_pylist()
+    assert ts_seconds == sorted(ts_seconds)  # ASC

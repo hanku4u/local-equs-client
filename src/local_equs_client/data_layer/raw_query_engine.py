@@ -53,6 +53,37 @@ class RawQueryEngine:
         finally:
             conn.close()
 
+    def fetch_page(
+        self,
+        plan: QueryPlan,
+        *,
+        offset: int,
+        limit: int,
+        order: Literal["asc", "desc"] = "asc",
+        cancelled: Callable[[], bool] | None = None,
+    ) -> pa.Table:
+        is_cancelled = cancelled or (lambda: False)
+        if not plan.per_tool_queries:
+            return pa.table({})
+        displayed = _displayed_columns(plan.per_tool_queries)
+        union_sql = _build_union_sql(plan.per_tool_queries, displayed)
+        order_sql = "ASC" if order == "asc" else "DESC"
+        sql = (
+            f"SELECT * FROM (\n{union_sql}\n)\n"
+            f"ORDER BY ts {order_sql}\n"
+            f"LIMIT {int(limit)} OFFSET {int(offset)}"
+        )
+        conn = duckdb.connect(":memory:")
+        try:
+            if is_cancelled():
+                raise QueryCancelled()
+            table = conn.execute(sql).to_arrow_table()
+            if is_cancelled():
+                raise QueryCancelled()
+            return table
+        finally:
+            conn.close()
+
 
 def _displayed_columns(queries: list[ToolQuery]) -> tuple[str, ...]:
     """Union of raw columns across every per-tool query, sorted alphabetically."""
