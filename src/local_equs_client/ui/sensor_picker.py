@@ -28,9 +28,12 @@ The picker has six stacked sections plus a detail pane:
     |   ...                            |
     +----------------------------------+
 
-Selection still goes through ``SelectionModel.tools`` +
-``SelectionModel.sensors_canonical``; results-list clicks toggle the same
-backing items as the tree.
+Selection normally flows through ``SelectionModel.sensors_canonical``. When a
+tool has no canonical metadata (offline run with no server, or a tool the
+backend doesn't know about), the branch falls back to the raw sensor names
+read from the parquet schema via ``MetadataCache.sensors_for``. Those leaves
+push to ``SelectionModel.sensors_raw`` so the planner uses them verbatim
+without going through canonical → raw mapping.
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ from local_equs_client.data_layer.metadata_cache import (
     CanonicalSensor,
     Category,
     MetadataCache,
+    SensorInfo,
 )
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.selection.types import TimeRange
@@ -67,9 +71,13 @@ _SENSOR_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 _NODE_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 _DESCRIPTION_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 _UNITS_ROLE = int(Qt.ItemDataRole.UserRole) + 5
+_SENSOR_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 6
 _NODE_TOOL = "tool"
 _NODE_CATEGORY = "category"
 _NODE_SENSOR = "sensor"
+_SENSOR_CANONICAL = "canonical"
+_SENSOR_RAW = "raw"
+_RAW_CATEGORY_LABEL = "All sensors (raw)"
 
 _SAVED_SETS_PLACEHOLDER = "No saved sets yet — coming in M5"
 _SAVE_AS_SET_TOOLTIP = "Coming in M5"
@@ -232,9 +240,23 @@ class SensorPicker(QWidget):
         )
         tool_item.setCheckState(0, Qt.CheckState.Unchecked)
 
-        if not sensors:
+        if sensors:
+            self._populate_canonical(tool_item, tool_id, sensors, categories_by_id)
             return
 
+        # Offline fallback: no canonical metadata for this tool, so list the
+        # raw parquet columns directly and route checks to ``sensors_raw``.
+        raw_sensors = self._cache.sensors_for(tool_id)
+        if raw_sensors:
+            self._populate_raw(tool_item, tool_id, raw_sensors)
+
+    def _populate_canonical(
+        self,
+        tool_item: QTreeWidgetItem,
+        tool_id: str,
+        sensors: list[CanonicalSensor],
+        categories_by_id: dict[str, Category],
+    ) -> None:
         by_category: dict[str | None, list[CanonicalSensor]] = {}
         for c in sensors:
             by_category.setdefault(c.category_id, []).append(c)
@@ -249,31 +271,43 @@ class SensorPicker(QWidget):
 
         for cat_id in ordered_keys:
             cat_label = _category_label(cat_id, categories_by_id)
-            cat_item = QTreeWidgetItem(tool_item, [cat_label])
-            cat_item.setData(0, _NODE_KIND_ROLE, _NODE_CATEGORY)
-            cat_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsAutoTristate
-            )
-            cat_item.setCheckState(0, Qt.CheckState.Unchecked)
+            cat_item = _make_category_item(tool_item, cat_label)
 
             for sensor in sorted(by_category[cat_id], key=lambda s: s.name):
                 label = sensor.name
                 if sensor.units:
                     label += f" ({sensor.units})"
-                leaf = QTreeWidgetItem(cat_item, [label])
-                leaf.setData(0, _TOOL_ROLE, tool_id)
-                leaf.setData(0, _SENSOR_ROLE, sensor.name)
-                leaf.setData(0, _NODE_KIND_ROLE, _NODE_SENSOR)
-                leaf.setData(0, _DESCRIPTION_ROLE, sensor.description or "")
-                leaf.setData(0, _UNITS_ROLE, sensor.units or "")
-                leaf.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled
-                    | Qt.ItemFlag.ItemIsSelectable
-                    | Qt.ItemFlag.ItemIsUserCheckable
+                _make_sensor_leaf(
+                    cat_item,
+                    tool_id=tool_id,
+                    sensor_name=sensor.name,
+                    label=label,
+                    description=sensor.description or "",
+                    units=sensor.units or "",
+                    kind=_SENSOR_CANONICAL,
                 )
-                leaf.setCheckState(0, Qt.CheckState.Unchecked)
+
+    def _populate_raw(
+        self,
+        tool_item: QTreeWidgetItem,
+        tool_id: str,
+        sensors: list[SensorInfo],
+    ) -> None:
+        tool_item.setText(0, f"{tool_id} (0/{len(sensors)})")
+        cat_item = _make_category_item(tool_item, _RAW_CATEGORY_LABEL)
+        for sensor in sorted(sensors, key=lambda s: s.raw_name):
+            label = sensor.raw_name
+            if sensor.units:
+                label += f" ({sensor.units})"
+            _make_sensor_leaf(
+                cat_item,
+                tool_id=tool_id,
+                sensor_name=sensor.raw_name,
+                label=label,
+                description="",
+                units=sensor.units or "",
+                kind=_SENSOR_RAW,
+            )
 
     # --- Filter + search results ----------------------------------------
 
@@ -470,13 +504,16 @@ class SensorPicker(QWidget):
     def _push_to_model(self) -> None:
         tools: set[str] = set()
         canonicals: set[str] = set()
+        raws: set[str] = set()
         total_selected = 0
         for tool_idx in range(self._tree.topLevelItemCount()):
             tool_item = self._tree.topLevelItem(tool_idx)
             if tool_item is None:
                 continue
             tool_id = str(tool_item.data(0, _TOOL_ROLE) or "")
-            selected_in_tool = self._collect_selected_leaves(tool_item, tools, canonicals)
+            selected_in_tool = self._collect_selected_leaves(
+                tool_item, tools, canonicals, raws
+            )
             self._update_tool_label(tool_item, tool_id, selected_in_tool)
             total_selected += selected_in_tool
 
@@ -484,6 +521,7 @@ class SensorPicker(QWidget):
         try:
             self._model.set_tools(tuple(sorted(tools)))
             self._model.set_sensors_canonical(tuple(sorted(canonicals)))
+            self._model.set_sensors_raw(tuple(sorted(raws)))
         finally:
             self._suppress_push = False
         self._count_label.setText(f"Selected ({total_selected})")
@@ -493,6 +531,7 @@ class SensorPicker(QWidget):
         node: QTreeWidgetItem,
         tools: set[str],
         canonicals: set[str],
+        raws: set[str],
     ) -> int:
         kind = node.data(0, _NODE_KIND_ROLE)
         if kind == _NODE_SENSOR:
@@ -501,7 +540,11 @@ class SensorPicker(QWidget):
                 sensor = str(node.data(0, _SENSOR_ROLE) or "")
                 if tool_id and sensor:
                     tools.add(tool_id)
-                    canonicals.add(sensor)
+                    sensor_kind = node.data(0, _SENSOR_KIND_ROLE) or _SENSOR_CANONICAL
+                    if sensor_kind == _SENSOR_RAW:
+                        raws.add(sensor)
+                    else:
+                        canonicals.add(sensor)
                     return 1
             return 0
         count = 0
@@ -509,7 +552,7 @@ class SensorPicker(QWidget):
             child = node.child(child_idx)
             if child is None:
                 continue
-            count += self._collect_selected_leaves(child, tools, canonicals)
+            count += self._collect_selected_leaves(child, tools, canonicals, raws)
         return count
 
     def _update_tool_label(
@@ -525,7 +568,8 @@ class SensorPicker(QWidget):
         if self._suppress_push:
             return
         tools = set(self._model.tools)
-        sensors = set(self._model.sensors_canonical)
+        canonicals = set(self._model.sensors_canonical)
+        raws = set(self._model.sensors_raw)
 
         self._tree.blockSignals(True)
         try:
@@ -533,27 +577,33 @@ class SensorPicker(QWidget):
                 tool_item = self._tree.topLevelItem(tool_idx)
                 if tool_item is None:
                     continue
-                self._sync_branch(tool_item, tools, sensors)
+                self._sync_branch(tool_item, tools, canonicals, raws)
         finally:
             self._tree.blockSignals(False)
 
         self._refresh_counts()
 
     def _sync_branch(
-        self, node: QTreeWidgetItem, tools: set[str], sensors: set[str]
+        self,
+        node: QTreeWidgetItem,
+        tools: set[str],
+        canonicals: set[str],
+        raws: set[str],
     ) -> None:
         kind = node.data(0, _NODE_KIND_ROLE)
         if kind == _NODE_SENSOR:
             tool_id = str(node.data(0, _TOOL_ROLE) or "")
             sensor = str(node.data(0, _SENSOR_ROLE) or "")
-            should = tool_id in tools and sensor in sensors
+            sensor_kind = node.data(0, _SENSOR_KIND_ROLE) or _SENSOR_CANONICAL
+            lookup = raws if sensor_kind == _SENSOR_RAW else canonicals
+            should = tool_id in tools and sensor in lookup
             node.setCheckState(0, Qt.CheckState.Checked if should else Qt.CheckState.Unchecked)
             return
         for child_idx in range(node.childCount()):
             child = node.child(child_idx)
             if child is None:
                 continue
-            self._sync_branch(child, tools, sensors)
+            self._sync_branch(child, tools, canonicals, raws)
 
     def _refresh_counts(self) -> None:
         total = 0
@@ -599,6 +649,44 @@ def _count_checked_leaves(node: QTreeWidgetItem) -> int:
             continue
         count += _count_checked_leaves(child)
     return count
+
+
+def _make_category_item(parent: QTreeWidgetItem, label: str) -> QTreeWidgetItem:
+    item = QTreeWidgetItem(parent, [label])
+    item.setData(0, _NODE_KIND_ROLE, _NODE_CATEGORY)
+    item.setFlags(
+        Qt.ItemFlag.ItemIsEnabled
+        | Qt.ItemFlag.ItemIsUserCheckable
+        | Qt.ItemFlag.ItemIsAutoTristate
+    )
+    item.setCheckState(0, Qt.CheckState.Unchecked)
+    return item
+
+
+def _make_sensor_leaf(
+    parent: QTreeWidgetItem,
+    *,
+    tool_id: str,
+    sensor_name: str,
+    label: str,
+    description: str,
+    units: str,
+    kind: str,
+) -> QTreeWidgetItem:
+    leaf = QTreeWidgetItem(parent, [label])
+    leaf.setData(0, _TOOL_ROLE, tool_id)
+    leaf.setData(0, _SENSOR_ROLE, sensor_name)
+    leaf.setData(0, _NODE_KIND_ROLE, _NODE_SENSOR)
+    leaf.setData(0, _SENSOR_KIND_ROLE, kind)
+    leaf.setData(0, _DESCRIPTION_ROLE, description)
+    leaf.setData(0, _UNITS_ROLE, units)
+    leaf.setFlags(
+        Qt.ItemFlag.ItemIsEnabled
+        | Qt.ItemFlag.ItemIsSelectable
+        | Qt.ItemFlag.ItemIsUserCheckable
+    )
+    leaf.setCheckState(0, Qt.CheckState.Unchecked)
+    return leaf
 
 
 __all__ = ["SensorPicker"]

@@ -111,7 +111,8 @@ def test_tool_with_metadata_renders_categories_and_sensors(qapp, picker_env) -> 
     assert category_names == {"Process", "RF"}
 
 
-def test_tool_without_metadata_appears_with_no_children(qapp, picker_env) -> None:
+def test_tool_without_metadata_falls_back_to_raw_sensors(qapp, picker_env) -> None:
+    """Offline mode: when no canonical metadata exists, list raw parquet columns."""
     library, cache, _conn, data_dir = picker_env
     _write_parquet(data_dir / "etch_unknown.parquet")
     library.scan()
@@ -119,8 +120,61 @@ def test_tool_without_metadata_appears_with_no_children(qapp, picker_env) -> Non
     picker = SensorPicker(SelectionModel(), library, cache)
     tool_item = picker._tree.topLevelItem(0)  # noqa: SLF001
     assert tool_item is not None
-    assert tool_item.text(0) == "etch_unknown"
-    assert tool_item.childCount() == 0
+    # Tool item now shows a (0/N) count because the raw fallback added leaves.
+    assert tool_item.text(0).startswith("etch_unknown (0/")
+    # Single synthetic category with the raw parquet columns underneath.
+    assert tool_item.childCount() == 1
+    cat = tool_item.child(0)
+    assert cat is not None
+    assert cat.text(0) == "All sensors (raw)"
+    leaf_names = {
+        cat.child(i).text(0)  # type: ignore[union-attr]
+        for i in range(cat.childCount())
+    }
+    # _write_parquet creates one sensor column "PCham_torr"; ts is filtered out.
+    assert any("PCham_torr" in n for n in leaf_names)
+
+
+def test_raw_leaf_check_pushes_to_sensors_raw_not_canonical(
+    qapp, picker_env
+) -> None:
+    library, cache, _conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_unknown.parquet")
+    library.scan()
+
+    model = SelectionModel()
+    picker = SensorPicker(model, library, cache)
+
+    tool_item = picker._tree.topLevelItem(0)  # noqa: SLF001
+    assert tool_item is not None
+    cat = tool_item.child(0)
+    assert cat is not None
+    leaf = cat.child(0)
+    assert leaf is not None
+    leaf.setCheckState(0, Qt.CheckState.Checked)
+
+    assert model.tools == ("etch_unknown",)
+    assert model.sensors_raw == ("PCham_torr",)
+    assert model.sensors_canonical == ()
+
+
+def test_external_sensors_raw_change_checks_raw_leaves(qapp, picker_env) -> None:
+    library, cache, _conn, data_dir = picker_env
+    _write_parquet(data_dir / "etch_unknown.parquet")
+    library.scan()
+
+    model = SelectionModel()
+    picker = SensorPicker(model, library, cache)
+    model.set_tools(("etch_unknown",))
+    model.set_sensors_raw(("PCham_torr",))
+
+    tool_item = picker._tree.topLevelItem(0)  # noqa: SLF001
+    assert tool_item is not None
+    cat = tool_item.child(0)
+    assert cat is not None
+    leaf = cat.child(0)
+    assert leaf is not None
+    assert leaf.checkState(0) == Qt.CheckState.Checked
 
 
 # --- Selection sync --------------------------------------------------------
