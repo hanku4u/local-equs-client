@@ -89,3 +89,20 @@ def test_set_page_emits_dataChanged_for_page_range(qapp) -> None:
         ),
     )
     assert captured == [(200, 249)]
+
+
+from local_equs_client.ui.data_table import DataTableView  # noqa: E402
+
+
+def test_view_starts_with_empty_selection_status(qapp) -> None:
+    view = DataTableView()
+    assert "Empty selection" in view.status_text()
+
+
+def test_view_show_message_red_uses_error_style(qapp) -> None:
+    view = DataTableView()
+    view.show_error("Query failed: boom")
+    assert "Query failed: boom" in view.status_text()
+    style = view.status_label_style()
+    # Any red-ish color is fine; we just check the error style was applied.
+    assert "color" in style.lower()

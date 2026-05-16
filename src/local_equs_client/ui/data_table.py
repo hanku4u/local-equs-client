@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow as pa
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
+from PySide6.QtWidgets import QHeaderView, QLabel, QTableView, QVBoxLayout, QWidget
 
 if TYPE_CHECKING:
     pass
@@ -111,4 +112,52 @@ class _PagedRawValuesModel(QAbstractTableModel):
         return "" if value is None else str(value)
 
 
-__all__ = ["_PagedRawValuesModel"]
+_EMPTY_SELECTION_TEXT = (
+    "Empty selection — pick a tool and sensor to view raw data."
+)
+_NO_MAPPING_TEXT = "No mapped sensors for the selected tools."
+_STATUS_NORMAL_STYLE = "color: rgb(180, 180, 180); padding: 4px 6px;"
+_STATUS_ERROR_STYLE = "color: rgb(220, 100, 100); padding: 4px 6px;"
+
+
+class DataTableView(QWidget):
+    """Raw-rows table tab — empty-state shell (engine wiring in later tasks)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._status = QLabel(_EMPTY_SELECTION_TEXT)
+        self._status.setStyleSheet(_STATUS_NORMAL_STYLE)
+        layout.addWidget(self._status)
+
+        self._model = _PagedRawValuesModel()
+        self._table = QTableView()
+        self._table.setModel(self._model)
+        self._table.setSortingEnabled(False)
+        self._table.verticalHeader().setDefaultSectionSize(20)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        layout.addWidget(self._table, stretch=1)
+
+    # --- public helpers (used by tests + later tasks) --------------------
+
+    def status_text(self) -> str:
+        return self._status.text()
+
+    def status_label_style(self) -> str:
+        return self._status.styleSheet()
+
+    def show_error(self, message: str) -> None:
+        self._status.setText(message)
+        self._status.setStyleSheet(_STATUS_ERROR_STYLE)
+
+    def show_normal(self, message: str) -> None:
+        self._status.setText(message)
+        self._status.setStyleSheet(_STATUS_NORMAL_STYLE)
+
+
+__all__ = ["DataTableView", "_PagedRawValuesModel"]
