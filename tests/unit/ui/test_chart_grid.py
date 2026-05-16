@@ -480,8 +480,9 @@ def test_plain_wheel_scrolls_graphics_view(qapp) -> None:
     scrollbar.setRange(0, 1000)
     scrollbar.setValue(100)
 
+    plot_viewport = next(iter(grid._plots.values())).plot_widget.viewport()  # noqa: SLF001
     accepted = grid._graphics_wheel_filter.eventFilter(  # noqa: SLF001
-        grid._graphics.viewport(), _make_wheel_event(delta_y=120)
+        plot_viewport, _make_wheel_event(delta_y=120)
     )
 
     assert accepted is True
@@ -495,12 +496,59 @@ def test_ctrl_wheel_falls_through_for_zoom(qapp) -> None:
     scrollbar = grid._graphics.verticalScrollBar()  # noqa: SLF001
     before = scrollbar.value()
 
+    plot_viewport = next(iter(grid._plots.values())).plot_widget.viewport()  # noqa: SLF001
     accepted = grid._graphics_wheel_filter.eventFilter(  # noqa: SLF001
-        grid._graphics.viewport(), _make_wheel_event(delta_y=120, ctrl=True)
+        plot_viewport, _make_wheel_event(delta_y=120, ctrl=True)
     )
 
     assert accepted is False
     assert scrollbar.value() == before
+
+
+def test_real_plain_wheel_on_plot_viewport_moves_outer_scrollbar(qapp) -> None:
+    """A real wheel event delivered to PlotWidget.viewport() must move the
+    outer scrollbar — proving the filter is actually installed there and not
+    only on the (dead) outer-scrollarea viewport.
+    """
+    from PySide6.QtCore import QCoreApplication
+
+    grid = ChartGrid()
+    plan = _make_plan([(f"t{i}", ("c",)) for i in range(20)])
+    grid.on_plan_ready(plan)
+    scrollbar = grid._graphics.verticalScrollBar()  # noqa: SLF001
+    scrollbar.setRange(0, 1000)
+    scrollbar.setValue(200)
+
+    plot = next(iter(grid._plots.values()))  # noqa: SLF001
+    QCoreApplication.sendEvent(
+        plot.plot_widget.viewport(), _make_wheel_event(delta_y=120)
+    )
+
+    assert scrollbar.value() < 200, (
+        "outer scrollbar did not move — filter is not installed on the "
+        "PlotWidget viewport, so plain wheel is being consumed by pyqtgraph."
+    )
+
+
+def test_real_ctrl_wheel_on_plot_viewport_does_not_move_outer_scrollbar(qapp) -> None:
+    """Ctrl+wheel must fall through the filter so pyqtgraph's ViewBox can zoom.
+    The outer scrollbar must therefore stay put.
+    """
+    from PySide6.QtCore import QCoreApplication
+
+    grid = ChartGrid()
+    plan = _make_plan([(f"t{i}", ("c",)) for i in range(20)])
+    grid.on_plan_ready(plan)
+    scrollbar = grid._graphics.verticalScrollBar()  # noqa: SLF001
+    scrollbar.setRange(0, 1000)
+    scrollbar.setValue(200)
+
+    plot = next(iter(grid._plots.values()))  # noqa: SLF001
+    QCoreApplication.sendEvent(
+        plot.plot_widget.viewport(), _make_wheel_event(delta_y=120, ctrl=True)
+    )
+
+    assert scrollbar.value() == 200
 
 
 def test_overview_wheel_filter_scrolls_overview_container(qapp) -> None:
