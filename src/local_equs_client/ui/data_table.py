@@ -8,14 +8,30 @@ fetch through :class:`RawQueryEngine`. ``ts`` is the only sortable column.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import pyarrow as pa
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
 from PySide6.QtWidgets import QHeaderView, QLabel, QTableView, QVBoxLayout, QWidget
 
+from local_equs_client.data_layer.query_planner import QueryPlan
+
 if TYPE_CHECKING:
     pass
+
+
+class _Engine(Protocol):
+    def count(self, plan: QueryPlan, *, cancelled: object = None) -> int: ...
+
+    def fetch_page(
+        self,
+        plan: QueryPlan,
+        *,
+        offset: int,
+        limit: int,
+        order: str = "asc",
+        cancelled: object = None,
+    ) -> pa.Table: ...
 
 _PAGE_SIZE = 200
 _PLACEHOLDER = "…"
@@ -120,19 +136,34 @@ _STATUS_NORMAL_STYLE = "color: rgb(180, 180, 180); padding: 4px 6px;"
 _STATUS_ERROR_STYLE = "color: rgb(220, 100, 100); padding: 4px 6px;"
 
 
-class DataTableView(QWidget):
-    """Raw-rows table tab — empty-state shell (engine wiring in later tasks)."""
+def _displayed_columns_for_plan(plan: QueryPlan) -> tuple[str, ...]:
+    """Return sorted alphabetical union of raw_columns across all tool queries."""
+    seen: set[str] = set()
+    for q in plan.per_tool_queries:
+        seen.update(q.raw_columns)
+    return tuple(sorted(seen))
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+
+class DataTableView(QWidget):
+    """Raw-rows table tab — engine-driven (count + first page on set_plan)."""
+
+    def __init__(
+        self,
+        *,
+        engine: _Engine | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._engine = engine
+        self._plan: QueryPlan | None = None
+        self._order: str = "asc"
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
         self._status = QLabel(_EMPTY_SELECTION_TEXT)
         self._status.setStyleSheet(_STATUS_NORMAL_STYLE)
         layout.addWidget(self._status)
-
         self._model = _PagedRawValuesModel()
         self._table = QTableView()
         self._table.setModel(self._model)
@@ -142,6 +173,38 @@ class DataTableView(QWidget):
             QHeaderView.ResizeMode.Interactive
         )
         layout.addWidget(self._table, stretch=1)
+
+    def set_plan(self, plan: QueryPlan) -> None:
+        self._plan = plan
+        if not plan.per_tool_queries:
+            self.show_normal(_EMPTY_SELECTION_TEXT)
+            self._model.set_columns(())
+            self._model.set_total_count(0)
+            return
+        if all(not q.raw_columns for q in plan.per_tool_queries):
+            self.show_normal(_NO_MAPPING_TEXT)
+            self._model.set_columns(())
+            self._model.set_total_count(0)
+            return
+        self._refresh()
+
+    def _refresh(self) -> None:
+        plan = self._plan
+        engine = self._engine
+        if plan is None or engine is None:
+            return
+        total = engine.count(plan)
+        displayed = _displayed_columns_for_plan(plan)
+        self._model.set_columns(("tool_id", "ts", *displayed))
+        self._model.set_total_count(total)
+        page = engine.fetch_page(plan, offset=0, limit=_PAGE_SIZE, order=self._order)
+        self._model.set_page(offset=0, page=page)
+        first = 1 if total > 0 else 0
+        last = min(_PAGE_SIZE, total)
+        status = f"Showing {first}–{last} of {total:,} rows"
+        if plan.partial_data_warnings:
+            status += f" (partial data: {'; '.join(plan.partial_data_warnings)})"
+        self.show_normal(status)
 
     # --- public helpers (used by tests + later tasks) --------------------
 

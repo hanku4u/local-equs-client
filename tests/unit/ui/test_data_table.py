@@ -106,3 +106,80 @@ def test_view_show_message_red_uses_error_style(qapp) -> None:
     style = view.status_label_style()
     # Any red-ish color is fine; we just check the error style was applied.
     assert "color" in style.lower()
+
+
+from datetime import UTC, datetime, timedelta  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery  # noqa: E402
+from local_equs_client.selection.types import TimeRange  # noqa: E402
+
+
+def _plan(per_tool: list[tuple[str, tuple[str, ...]]]) -> QueryPlan:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    return QueryPlan(
+        per_tool_queries=[
+            ToolQuery(
+                tool_id=t,
+                file_paths=(Path(f"{t}.parquet"),),
+                raw_columns=cols,
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=60)),
+            )
+            for t, cols in per_tool
+        ],
+        target_resolution=timedelta(seconds=1),
+        partial_data_warnings=[],
+    )
+
+
+class _FakeEngine:
+    def __init__(
+        self, *, count_value: int = 0, page_table: pa.Table | None = None
+    ) -> None:
+        self.count_value = count_value
+        self.page_table = page_table or pa.table({})
+        self.count_calls: list[QueryPlan] = []
+        self.fetch_calls: list[tuple[QueryPlan, int, int, str]] = []
+
+    def count(self, plan, *, cancelled=None) -> int:
+        self.count_calls.append(plan)
+        return self.count_value
+
+    def fetch_page(self, plan, *, offset, limit, order="asc", cancelled=None):
+        self.fetch_calls.append((plan, offset, limit, order))
+        return self.page_table
+
+
+def test_set_plan_empty_keeps_empty_status(qapp) -> None:
+    engine = _FakeEngine()
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([]))
+    assert "Empty selection" in view.status_text()
+    assert engine.count_calls == []
+    assert engine.fetch_calls == []
+
+
+def test_set_plan_non_empty_calls_count_then_first_page(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {
+            "tool_id": ["a"] * 3,
+            "ts": ["2026-01-01"] * 3,
+            "chamber_pressure": [1.0, 2.0, 3.0],
+        }
+    )
+    engine = _FakeEngine(count_value=12345, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+
+    assert len(engine.count_calls) == 1
+    assert engine.fetch_calls == [(engine.count_calls[0], 0, 200, "asc")]
+    assert "Showing 1–" in view.status_text() or "Showing 1-" in view.status_text()
+    assert "12,345" in view.status_text()
+
+
+def test_set_plan_no_mapped_sensors_shows_friendly_status(qapp) -> None:
+    engine = _FakeEngine()
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ())]))  # tool selected but no raw columns
+    assert "No mapped sensors" in view.status_text()
+    assert engine.count_calls == []
