@@ -21,6 +21,7 @@ from local_equs_client.data_layer.query_engine import QueryError
 if TYPE_CHECKING:
     from local_equs_client.data_layer.query_planner import QueryPlan
     from local_equs_client.data_layer.raw_query_engine import RawQueryEngine
+    from local_equs_client.ui.chart_grid import ChartGrid
 
 
 def write_chart_csv(
@@ -146,4 +147,15 @@ def _format_value(scalar: pa.Scalar) -> str:
     return "" if value is None else str(value)
 
 
-__all__ = ["write_chart_csv", "write_table_csv"]
+def write_chart_png(path: Path, chart_grid: ChartGrid, *, scale: int = 3) -> None:
+    """Save the chart grid as a PNG at ``scale``× the on-screen resolution.
+
+    Default ``scale=3`` yields ~288 DPI on a 96 DPI display, which is
+    enough for crisp print output.
+    """
+    pixmap = chart_grid.render_to_pixmap(scale=scale)
+    if not pixmap.save(str(path), "PNG"):
+        raise OSError(f"Failed to save PNG to {path}")
+
+
+__all__ = ["write_chart_csv", "write_chart_png", "write_table_csv"]

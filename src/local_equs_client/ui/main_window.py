@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
 
     def _on_right_tab_changed(self, index: int) -> None:
         self._data_table.set_active(index == 1)
+        self._export_png_action.setEnabled(index == 0)
 
     def _on_selection_changed_for_table(self) -> None:
         planner = QueryPlanner(self._library, self._cache)
@@ -190,6 +191,9 @@ class MainWindow(QMainWindow):
         export_csv_action = QAction("&Export CSV…", self)
         export_csv_action.triggered.connect(self._export_csv)
         file_menu.addAction(export_csv_action)
+        self._export_png_action = QAction("Export &PNG…", self)
+        self._export_png_action.triggered.connect(self._export_png)
+        file_menu.addAction(self._export_png_action)
         file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -250,6 +254,29 @@ class MainWindow(QMainWindow):
                 write_table_csv(path, plan, RawQueryEngine())
             else:
                 write_chart_csv(path, self._chart_grid._last_results)  # noqa: SLF001
+        except OSError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Exported to {path}", 5000)
+
+    def _export_png(self) -> None:
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from local_equs_client.ui.export import write_chart_png
+
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PNG",
+            "chart.png",
+            "PNG files (*.png);;All files (*)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        try:
+            write_chart_png(path, self._chart_grid)
         except OSError as exc:
             QMessageBox.warning(self, "Export failed", str(exc))
             return

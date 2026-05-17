@@ -191,7 +191,7 @@ def test_write_table_csv_header_is_alphabetically_sorted_union(tmp_path: Path) -
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
 
-def test_main_window_export_csv_action_is_present(qapp, tmp_path: Path, monkeypatch) -> None:  # noqa: E501
+def _make_main_window(tmp_path: Path):
     from local_equs_client.data_layer.local_library import LocalLibrary
     from local_equs_client.data_layer.metadata_cache import MetadataCache
     from local_equs_client.data_layer.query_controller import QueryController
@@ -209,8 +209,11 @@ def test_main_window_export_csv_action_is_present(qapp, tmp_path: Path, monkeypa
     cache = MetadataCache(library)
     model = SelectionModel()
     controller = QueryController(model, QueryPlanner(library), QueryEngine())
-
     window = MainWindow(model, library, cache, controller)
+    return window, conn
+
+
+def _menu_action_texts(window) -> list[str]:
     actions: list[str] = []
     for menu_action in window.menuBar().actions():
         menu = menu_action.menu()
@@ -218,5 +221,54 @@ def test_main_window_export_csv_action_is_present(qapp, tmp_path: Path, monkeypa
             continue
         for a in menu.actions():
             actions.append(a.text())
-    assert any("Export CSV" in t for t in actions)
+    return actions
+
+
+def test_main_window_export_csv_action_is_present(qapp, tmp_path: Path) -> None:
+    window, conn = _make_main_window(tmp_path)
+    assert any("Export CSV" in t for t in _menu_action_texts(window))
     conn.close()
+
+
+def test_main_window_export_png_action_is_present(qapp, tmp_path: Path) -> None:
+    window, conn = _make_main_window(tmp_path)
+    assert any("Export PNG" in t.replace("&", "") for t in _menu_action_texts(window))
+    conn.close()
+
+
+def test_export_png_action_disabled_when_table_tab_active(qapp, tmp_path: Path) -> None:
+    window, conn = _make_main_window(tmp_path)
+    # Chart tab (index 0) by default → action enabled.
+    assert window._export_png_action.isEnabled() is True  # noqa: SLF001
+    window._right_tabs.setCurrentIndex(1)  # noqa: SLF001 — Table tab
+    assert window._export_png_action.isEnabled() is False  # noqa: SLF001
+    window._right_tabs.setCurrentIndex(0)  # noqa: SLF001
+    assert window._export_png_action.isEnabled() is True  # noqa: SLF001
+    conn.close()
+
+
+def test_chart_grid_render_to_pixmap_returns_scaled_pixmap(qapp, tmp_path: Path) -> None:
+    from local_equs_client.ui.chart_grid import ChartGrid
+
+    grid = ChartGrid()
+    grid.resize(400, 300)
+    pixmap = grid.render_to_pixmap(scale=3)
+    assert not pixmap.isNull()
+    # The pixmap should be 3× the inner widget size in each axis.
+    assert pixmap.width() >= 400 * 3 - 10  # tolerance for layout settling
+    assert pixmap.height() >= 100  # has some content
+
+
+def test_write_chart_png_writes_a_real_png_file(qapp, tmp_path: Path) -> None:
+    from local_equs_client.ui.chart_grid import ChartGrid
+    from local_equs_client.ui.export import write_chart_png
+
+    grid = ChartGrid()
+    grid.resize(400, 300)
+    out = tmp_path / "chart.png"
+    write_chart_png(out, grid, scale=2)
+    assert out.exists()
+    assert out.stat().st_size > 100  # non-trivial file
+    # PNG magic bytes
+    with out.open("rb") as fh:
+        assert fh.read(8) == b"\x89PNG\r\n\x1a\n"
