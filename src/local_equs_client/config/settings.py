@@ -25,6 +25,8 @@ class Settings:
     data_dir: Path
     server_url: str | None = None
     permissions_simulate_admin: bool = False
+    telemetry_opt_out: bool = False
+    update_check_frequency_hours: int = 24
 
     @classmethod
     def defaults(cls) -> Settings:
@@ -32,6 +34,8 @@ class Settings:
             data_dir=paths.data_dir(),
             server_url=None,
             permissions_simulate_admin=False,
+            telemetry_opt_out=False,
+            update_check_frequency_hours=24,
         )
 
     @classmethod
@@ -47,11 +51,19 @@ class Settings:
         data_dir_raw = raw.get("data_dir")
         server_url_raw = raw.get("server_url")
         admin_raw = raw.get("permissions_simulate_admin")
+        telemetry_raw = raw.get("telemetry_opt_out")
+        update_freq_raw = raw.get("update_check_frequency_hours")
         return replace(
             defaults,
             data_dir=Path(data_dir_raw).expanduser() if data_dir_raw else defaults.data_dir,
             server_url=server_url_raw or None,
             permissions_simulate_admin=bool(admin_raw) if admin_raw is not None else False,
+            telemetry_opt_out=bool(telemetry_raw) if telemetry_raw is not None else False,
+            update_check_frequency_hours=(
+                int(update_freq_raw)
+                if update_freq_raw is not None
+                else defaults.update_check_frequency_hours
+            ),
         )
 
 
@@ -96,6 +108,10 @@ def _to_toml(s: Settings) -> str:
         lines.append(f"server_url = {_toml_string(s.server_url)}")
     if s.permissions_simulate_admin:
         lines.append("permissions_simulate_admin = true")
+    if s.telemetry_opt_out:
+        lines.append("telemetry_opt_out = true")
+    if s.update_check_frequency_hours != 24:
+        lines.append(f"update_check_frequency_hours = {int(s.update_check_frequency_hours)}")
     return "\n".join(lines) + "\n"
 
 
