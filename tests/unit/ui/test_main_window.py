@@ -59,3 +59,25 @@ def test_close_event_persists_geometry(qapp, env, tmp_path: Path, monkeypatch) -
 
     geometry = window._qsettings.value("mainwindow/geometry")  # noqa: SLF001
     assert geometry is not None
+
+
+def test_right_side_of_splitter_is_a_tab_widget_with_chart_and_table(qapp, env) -> None:
+    from PySide6.QtWidgets import QTabWidget
+    model, library, cache, controller = env
+    window = MainWindow(model, library, cache, controller)
+    right = window._splitter.widget(1)  # noqa: SLF001
+    assert isinstance(right, QTabWidget)
+    labels = [right.tabText(i) for i in range(right.count())]
+    assert labels == ["Chart", "Table"]
+
+
+def test_switching_to_table_tab_activates_data_table(qapp, env) -> None:
+    from PySide6.QtWidgets import QTabWidget
+    model, library, cache, controller = env
+    window = MainWindow(model, library, cache, controller)
+    tabs: QTabWidget = window._splitter.widget(1)  # noqa: SLF001
+    tabs.setCurrentIndex(1)  # Table
+    table_view = tabs.widget(1)
+    assert table_view._active is True  # noqa: SLF001
+    tabs.setCurrentIndex(0)  # back to Chart
+    assert table_view._active is False  # noqa: SLF001
