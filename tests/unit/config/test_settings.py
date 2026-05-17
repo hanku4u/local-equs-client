@@ -130,3 +130,56 @@ def test_omitting_server_url_means_not_persisted(_isolated_app_dir: Path) -> Non
     settings.save(settings.Settings(data_dir=_isolated_app_dir / "data", server_url=None))
     config = tomllib.loads(paths.config_file().read_text(encoding="utf-8"))
     assert "server_url" not in config
+
+
+def test_telemetry_opt_out_default_is_false(_isolated_app_dir: Path) -> None:
+    assert settings.get_settings().telemetry_opt_out is False
+
+
+def test_telemetry_opt_out_round_trips_through_save(_isolated_app_dir: Path) -> None:
+    settings.save(
+        settings.Settings(
+            data_dir=_isolated_app_dir / "data",
+            telemetry_opt_out=True,
+        )
+    )
+    settings.reset_settings()
+    assert settings.get_settings().telemetry_opt_out is True
+
+
+def test_default_telemetry_not_persisted(_isolated_app_dir: Path) -> None:
+    settings.save(settings.Settings(data_dir=_isolated_app_dir / "data"))
+    config = tomllib.loads(paths.config_file().read_text(encoding="utf-8"))
+    assert "telemetry_opt_out" not in config
+
+
+def test_update_check_frequency_default_is_daily(_isolated_app_dir: Path) -> None:
+    assert settings.get_settings().update_check_frequency_hours == 24
+
+
+def test_update_check_frequency_round_trips_through_save(_isolated_app_dir: Path) -> None:
+    settings.save(
+        settings.Settings(
+            data_dir=_isolated_app_dir / "data",
+            update_check_frequency_hours=168,
+        )
+    )
+    settings.reset_settings()
+    assert settings.get_settings().update_check_frequency_hours == 168
+
+
+def test_default_update_check_frequency_not_persisted(_isolated_app_dir: Path) -> None:
+    settings.save(settings.Settings(data_dir=_isolated_app_dir / "data"))
+    config = tomllib.loads(paths.config_file().read_text(encoding="utf-8"))
+    assert "update_check_frequency_hours" not in config
+
+
+def test_update_check_frequency_never_round_trips(_isolated_app_dir: Path) -> None:
+    settings.save(
+        settings.Settings(
+            data_dir=_isolated_app_dir / "data",
+            update_check_frequency_hours=0,
+        )
+    )
+    settings.reset_settings()
+    assert settings.get_settings().update_check_frequency_hours == 0

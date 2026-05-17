@@ -11,6 +11,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -24,6 +26,20 @@ from PySide6.QtWidgets import (
 )
 
 from local_equs_client.config import settings
+
+_UPDATE_FREQ_OPTIONS: list[tuple[str, int]] = [
+    ("Never", 0),
+    ("Daily", 24),
+    ("Weekly", 168),
+]
+
+
+def _update_freq_index(hours: int) -> int:
+    """Return the dropdown index whose hours value matches ``hours``, default Daily."""
+    for i, (_, value) in enumerate(_UPDATE_FREQ_OPTIONS):
+        if value == hours:
+            return i
+    return 1  # Daily fallback when stored value isn't one of the canonical options
 
 
 class SettingsPanel(QDialog):
@@ -52,6 +68,20 @@ class SettingsPanel(QDialog):
         self._server_edit.setPlaceholderText("https://equs.example.com")
         form.addRow("Server URL:", self._server_edit)
 
+        # Telemetry row — positive framing, checked = telemetry enabled.
+        self._telemetry_check = QCheckBox("Send anonymous telemetry")
+        self._telemetry_check.setChecked(not current.telemetry_opt_out)
+        form.addRow("Telemetry:", self._telemetry_check)
+
+        # Update check frequency row.
+        self._update_freq_combo = QComboBox()
+        for label, hours in _UPDATE_FREQ_OPTIONS:
+            self._update_freq_combo.addItem(label, hours)
+        self._update_freq_combo.setCurrentIndex(
+            _update_freq_index(current.update_check_frequency_hours)
+        )
+        form.addRow("Check for updates:", self._update_freq_combo)
+
         layout.addLayout(form)
 
         hint = QLabel("Changes to the data directory take effect after restarting the app.")
@@ -78,8 +108,17 @@ class SettingsPanel(QDialog):
     def _on_save(self) -> None:
         new_dir = Path(self._path_edit.text()).expanduser()
         new_server = self._server_edit.text().strip() or None
+        opt_out = not self._telemetry_check.isChecked()
+        freq_data = self._update_freq_combo.currentData()
+        new_freq = int(freq_data) if freq_data is not None else 24
         settings.save(
-            replace(settings.get_settings(), data_dir=new_dir, server_url=new_server)
+            replace(
+                settings.get_settings(),
+                data_dir=new_dir,
+                server_url=new_server,
+                telemetry_opt_out=opt_out,
+                update_check_frequency_hours=new_freq,
+            )
         )
         self.accept()
 
