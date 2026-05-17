@@ -36,8 +36,8 @@ from datetime import UTC, datetime
 import numpy as np
 import pyarrow as pa
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, Qt, Signal
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QPainter, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -197,6 +197,38 @@ class ChartGrid(QWidget):
         self._update_cap_banner(self._last_plan)
         if self._last_plan is not None:
             self._rerender_from_cache()
+
+    def render_to_pixmap(self, *, scale: int = 3) -> QPixmap:
+        """Render the full stacked plot list to a ``QPixmap`` at ``scale``× DPR.
+
+        Captures the inner widget (every plot, including ones scrolled off
+        screen) rather than the scroll viewport, so the output PNG covers
+        the entire chart regardless of the current scroll position.
+        """
+        inner = (
+            self._overview_inner
+            if self._mode == "overview"
+            else self._graphics_inner
+        )
+        inner.adjustSize()
+        size = inner.size()
+        if size.width() < 10 or size.height() < 10:
+            # Inner widget hasn't been laid out (e.g., no plots yet); fall
+            # back to the visible grid size so we still produce something
+            # reasonable.
+            size = self.size()
+        if size.width() < 10 or size.height() < 10:
+            size = inner.sizeHint()
+        target = QSize(max(1, size.width() * scale), max(1, size.height() * scale))
+        pixmap = QPixmap(target)
+        pixmap.fill(Qt.GlobalColor.white)
+        painter = QPainter(pixmap)
+        try:
+            painter.scale(scale, scale)
+            inner.render(painter, QPoint())
+        finally:
+            painter.end()
+        return pixmap
 
     def on_plan_ready(self, plan: QueryPlan) -> None:
         """C4.4: lay out placeholder frames the moment a plan is built."""
