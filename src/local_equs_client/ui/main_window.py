@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,10 +28,13 @@ from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.metadata_cache import MetadataCache
 from local_equs_client.data_layer.query_controller import QueryController
+from local_equs_client.data_layer.query_planner import QueryPlanner
+from local_equs_client.data_layer.raw_query_engine import RawQueryEngine
 from local_equs_client.data_layer.update_manager import UpdateManager
 from local_equs_client.selection.selection_model import SelectionModel
 from local_equs_client.selection.view_controller import ViewController
 from local_equs_client.ui.chart_grid import ChartGrid
+from local_equs_client.ui.data_table import DataTableView
 from local_equs_client.ui.local_library_panel import LocalLibraryPanel
 from local_equs_client.ui.mapping_editor import MappingEditor
 from local_equs_client.ui.sensor_picker import SensorPicker
@@ -44,6 +48,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WIDTH = 1400
 _DEFAULT_HEIGHT = 900
 _DEFAULT_SPLIT = (320, 1080)
+_TABLE_VIEWPORT_WIDTH_PX = 1080  # planner argument; table doesn't use target_resolution
 
 
 class MainWindow(QMainWindow):
@@ -101,7 +106,12 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._picker)
 
         self._chart_grid = ChartGrid()
-        self._splitter.addWidget(self._chart_grid)
+        self._data_table = DataTableView(engine=RawQueryEngine())
+        self._right_tabs = QTabWidget()
+        self._right_tabs.addTab(self._chart_grid, "Chart")
+        self._right_tabs.addTab(self._data_table, "Table")
+        self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
+        self._splitter.addWidget(self._right_tabs)
 
         self._splitter.setSizes(list(_DEFAULT_SPLIT))
         self._splitter.setStretchFactor(0, 0)
@@ -132,6 +142,18 @@ class MainWindow(QMainWindow):
         self._chart_grid.promoteRequested.connect(self._on_promote_requested)
         # C4.10: guardrail banner button switches view mode without touching selection.
         self._chart_grid.switchToOverviewRequested.connect(self._on_switch_to_overview)
+        # C5.2: feed the raw-data table on selection changes, prime its initial state.
+        self._model.selectionChanged.connect(self._on_selection_changed_for_table)
+        self._data_table.set_active(self._right_tabs.currentIndex() == 1)
+        self._on_selection_changed_for_table()
+
+    def _on_right_tab_changed(self, index: int) -> None:
+        self._data_table.set_active(index == 1)
+
+    def _on_selection_changed_for_table(self) -> None:
+        planner = QueryPlanner(self._library, self._cache)
+        plan = planner.plan(self._model.snapshot(), "standard", _TABLE_VIEWPORT_WIDTH_PX)
+        self._data_table.set_plan(plan)
 
     def _on_mode_changed(self, mode: str) -> None:
         from typing import cast as _cast

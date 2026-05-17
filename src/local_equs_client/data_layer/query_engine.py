@@ -26,6 +26,7 @@ from datetime import timedelta
 import duckdb
 import pyarrow as pa
 
+from local_equs_client.data_layer._sql import quote_ident, quote_string
 from local_equs_client.data_layer.query_cache import CacheKey, QueryCache
 from local_equs_client.data_layer.query_planner import QueryPlan, ToolQuery
 
@@ -169,19 +170,19 @@ def _build_sql(query: ToolQuery, resolution: timedelta) -> str:
     if not query.file_paths or not query.raw_columns:
         return ""
 
-    paths_sql = ", ".join(_quote_string(str(p)) for p in query.file_paths)
+    paths_sql = ", ".join(quote_string(str(p)) for p in query.file_paths)
     interval_sql = _interval_string(resolution)
-    start_sql = _quote_string(query.time_range.start.strftime("%Y-%m-%d %H:%M:%S.%f"))
-    end_sql = _quote_string(query.time_range.end.strftime("%Y-%m-%d %H:%M:%S.%f"))
+    start_sql = quote_string(query.time_range.start.strftime("%Y-%m-%d %H:%M:%S.%f"))
+    end_sql = quote_string(query.time_range.end.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
     select_parts = [f"time_bucket({interval_sql}, ts) AS bucket"]
     for col in query.raw_columns:
-        c = _quote_ident(col)
+        c = quote_ident(col)
         select_parts.extend(
             [
-                f"avg({c}) AS {_quote_ident(col + '_avg')}",
-                f"min({c}) AS {_quote_ident(col + '_min')}",
-                f"max({c}) AS {_quote_ident(col + '_max')}",
+                f"avg({c}) AS {quote_ident(col + '_avg')}",
+                f"min({c}) AS {quote_ident(col + '_min')}",
+                f"max({c}) AS {quote_ident(col + '_max')}",
             ]
         )
 
@@ -205,14 +206,6 @@ def _interval_string(td: timedelta) -> str:
     if seconds % 60 == 0:
         return f"INTERVAL '{seconds // 60} minutes'"
     return f"INTERVAL '{seconds} seconds'"
-
-
-def _quote_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _quote_ident(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
 
 
 __all__ = ["QueryCancelled", "QueryEngine", "QueryError", "ToolResult"]
