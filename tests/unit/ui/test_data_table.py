@@ -60,6 +60,18 @@ def test_data_inside_loaded_page_returns_cell(qapp) -> None:
     assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "1.5"
 
 
+def test_data_renders_nanosecond_timestamps_without_crashing(qapp) -> None:
+    model = _PagedRawValuesModel()
+    model.set_columns(("tool_id", "ts"))
+    model.set_total_count(2)
+    ts_col = pa.array([1767281038526229999, 1767281038526230000], type=pa.timestamp("ns"))
+    page = pa.Table.from_pydict({"tool_id": ["a", "a"], "ts": ts_col})
+    model.set_page(offset=0, page=page)
+    rendered = model.data(model.index(0, 1), Qt.ItemDataRole.DisplayRole)
+    assert isinstance(rendered, str)
+    assert "2026" in rendered
+
+
 def test_data_outside_loaded_page_returns_placeholder(qapp) -> None:
     model = _PagedRawValuesModel()
     model.set_columns(("tool_id", "ts"))

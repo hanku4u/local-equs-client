@@ -9,6 +9,7 @@ fetch through :class:`RawQueryEngine`. ``ts`` is the only sortable column.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 import pyarrow as pa
@@ -128,8 +129,21 @@ class _PagedRawValuesModel(QAbstractTableModel):
         col_name = self._columns[index.column()]
         if col_name not in self._page.column_names:
             return _PLACEHOLDER
-        value = self._page.column(col_name)[local_row].as_py()
-        return "" if value is None else str(value)
+        return _format_scalar(self._page.column(col_name)[local_row])
+
+
+def _format_scalar(scalar: pa.Scalar) -> str:
+    if not scalar.is_valid:
+        return ""
+    # Nanosecond-precision timestamps can't go through as_py() because
+    # datetime.datetime tops out at microseconds; format them by hand.
+    if pa.types.is_timestamp(scalar.type) and scalar.type.unit == "ns":
+        ns_value = int(scalar.value)
+        seconds, frac_ns = divmod(ns_value, 1_000_000_000)
+        dt = datetime.fromtimestamp(seconds, tz=UTC).replace(tzinfo=None)
+        return f"{dt.strftime('%Y-%m-%d %H:%M:%S')}.{frac_ns:09d}"
+    value = scalar.as_py()
+    return "" if value is None else str(value)
 
 
 _EMPTY_SELECTION_TEXT = (
