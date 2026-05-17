@@ -220,3 +220,40 @@ def test_clicking_ts_header_toggles_order_and_refetches(qapp) -> None:
 
     view.toggle_sort()
     assert engine.fetch_calls[-1] == (engine.count_calls[0], 0, 200, "asc")
+
+
+def test_toggle_sort_without_plan_does_not_crash(qapp) -> None:
+    engine = _FakeEngine()
+    view = DataTableView(engine=engine)
+    view.toggle_sort()
+    view.toggle_sort()
+    assert engine.fetch_calls == []
+    assert engine.count_calls == []
+
+
+def test_clicking_non_ts_header_is_noop(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {"tool_id": ["a"], "ts": ["2026-01-01"], "chamber_pressure": [1.0]}
+    )
+    engine = _FakeEngine(count_value=10, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+    calls_before = list(engine.fetch_calls)
+
+    view._on_header_clicked(0)  # tool_id column
+    view._on_header_clicked(2)  # chamber_pressure column
+
+    assert engine.fetch_calls == calls_before
+
+
+def test_section_clicked_signal_triggers_toggle(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {"tool_id": ["a"], "ts": ["2026-01-01"], "chamber_pressure": [1.0]}
+    )
+    engine = _FakeEngine(count_value=10, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+
+    view._table.horizontalHeader().sectionClicked.emit(1)
+
+    assert engine.fetch_calls[-1] == (engine.count_calls[0], 0, 200, "desc")
