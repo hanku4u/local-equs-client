@@ -187,6 +187,10 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
         file_menu.addSeparator()
+        export_csv_action = QAction("&Export CSV…", self)
+        export_csv_action.triggered.connect(self._export_csv)
+        file_menu.addAction(export_csv_action)
+        file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
@@ -218,6 +222,38 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         SettingsPanel(self).exec()
+
+    def _export_csv(self) -> None:
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from local_equs_client.ui.export import write_chart_csv, write_table_csv
+
+        is_table_tab = self._right_tabs.currentIndex() == 1
+        default_name = "data_table.csv" if is_table_tab else "chart.csv"
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export CSV",
+            default_name,
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        try:
+            if is_table_tab:
+                planner = QueryPlanner(self._library, self._cache)
+                plan = planner.plan(
+                    self._model.snapshot(), "standard", _TABLE_VIEWPORT_WIDTH_PX
+                )
+                write_table_csv(path, plan, RawQueryEngine())
+            else:
+                write_chart_csv(path, self._chart_grid._last_results)  # noqa: SLF001
+        except OSError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Exported to {path}", 5000)
 
     def _open_local_library(self) -> None:
         LocalLibraryPanel(self._library, self).exec()
