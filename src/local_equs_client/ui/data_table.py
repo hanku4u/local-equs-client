@@ -157,6 +157,8 @@ class DataTableView(QWidget):
         self._engine = engine
         self._plan: QueryPlan | None = None
         self._order: str = "asc"
+        self._active: bool = True
+        self._dirty: bool = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -180,6 +182,12 @@ class DataTableView(QWidget):
 
     def set_plan(self, plan: QueryPlan) -> None:
         self._plan = plan
+        if not self._active:
+            self._dirty = True
+            return
+        self._apply_plan(plan)
+
+    def _apply_plan(self, plan: QueryPlan) -> None:
         if not plan.per_tool_queries:
             self.show_normal(_EMPTY_SELECTION_TEXT)
             self._model.set_columns(())
@@ -191,6 +199,13 @@ class DataTableView(QWidget):
             self._model.set_total_count(0)
             return
         self._refresh()
+
+    def set_active(self, active: bool) -> None:
+        was_active = self._active
+        self._active = active
+        if not was_active and active and self._dirty and self._plan is not None:
+            self._dirty = False
+            self._apply_plan(self._plan)
 
     def _refresh(self) -> None:
         plan = self._plan

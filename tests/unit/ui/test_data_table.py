@@ -257,3 +257,27 @@ def test_section_clicked_signal_triggers_toggle(qapp) -> None:
     view._table.horizontalHeader().sectionClicked.emit(1)
 
     assert engine.fetch_calls[-1] == (engine.count_calls[0], 0, 200, "desc")
+
+
+def test_set_plan_while_hidden_marks_dirty_does_not_fetch(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {"tool_id": ["a"], "ts": ["2026-01-01"], "chamber_pressure": [1.0]}
+    )
+    engine = _FakeEngine(count_value=10, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_active(False)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+    assert engine.count_calls == []
+    assert engine.fetch_calls == []
+
+    view.set_active(True)
+    assert len(engine.count_calls) == 1
+    assert engine.fetch_calls == [(engine.count_calls[0], 0, 200, "asc")]
+
+
+def test_set_active_true_no_dirty_state_is_noop(qapp) -> None:
+    engine = _FakeEngine()
+    view = DataTableView(engine=engine)
+    view.set_active(True)
+    view.set_active(True)
+    assert engine.count_calls == []
