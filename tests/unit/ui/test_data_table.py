@@ -281,3 +281,30 @@ def test_set_active_true_no_dirty_state_is_noop(qapp) -> None:
     view.set_active(True)
     view.set_active(True)
     assert engine.count_calls == []
+
+
+def test_ctrl_c_copies_selection_as_tsv(qapp) -> None:
+    from PySide6.QtCore import QItemSelection, QItemSelectionModel
+    from PySide6.QtGui import QClipboard, QGuiApplication
+
+    page = pa.Table.from_pydict(
+        {
+            "tool_id": ["a", "a"],
+            "ts": ["2026-01-01 00:00:00", "2026-01-01 00:00:01"],
+            "chamber_pressure": [1.5, 2.5],
+        }
+    )
+    engine = _FakeEngine(count_value=2, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+
+    sel = QItemSelection(
+        view._model.index(0, 2), view._model.index(1, 2)  # noqa: SLF001
+    )
+    sel_model = view._table.selectionModel()  # noqa: SLF001
+    assert sel_model is not None
+    sel_model.select(sel, QItemSelectionModel.SelectionFlag.Select)
+    QGuiApplication.clipboard().clear(QClipboard.Mode.Clipboard)
+    view.copy_selection_as_tsv()
+    text = QGuiApplication.clipboard().text(QClipboard.Mode.Clipboard)
+    assert text == "1.5\n2.5"

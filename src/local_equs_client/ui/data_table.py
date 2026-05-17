@@ -13,6 +13,7 @@ from typing import Literal, Protocol
 
 import pyarrow as pa
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QHeaderView, QLabel, QTableView, QVBoxLayout, QWidget
 
 from local_equs_client.data_layer.query_planner import QueryPlan
@@ -183,6 +184,11 @@ class DataTableView(QWidget):
         )
         self._table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
 
+        copy_action = QAction(self)
+        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_action.triggered.connect(self.copy_selection_as_tsv)
+        self.addAction(copy_action)
+
     def set_plan(self, plan: QueryPlan) -> None:
         self._plan = plan
         if not self._active:
@@ -260,6 +266,26 @@ class DataTableView(QWidget):
         if plan.partial_data_warnings:
             status += f" (partial data: {'; '.join(plan.partial_data_warnings)})"
         self.show_normal(status)
+
+    def copy_selection_as_tsv(self) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        sel_model = self._table.selectionModel()
+        if sel_model is None:
+            return
+        indexes = sel_model.selectedIndexes()
+        if not indexes:
+            return
+        rows = sorted({i.row() for i in indexes})
+        cols = sorted({i.column() for i in indexes})
+        lines: list[str] = []
+        for r in rows:
+            cells: list[str] = []
+            for c in cols:
+                idx = self._model.index(r, c)
+                cells.append(str(self._model.data(idx) or ""))
+            lines.append("\t".join(cells))
+        QGuiApplication.clipboard().setText("\n".join(lines))
 
     # --- public helpers (used by tests + later tasks) --------------------
 
