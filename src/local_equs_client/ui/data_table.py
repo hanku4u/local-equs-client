@@ -176,6 +176,7 @@ class DataTableView(QWidget):
         self._table.verticalScrollBar().valueChanged.connect(
             lambda _: self.ensure_row_loaded(self._table.rowAt(0) or 0)
         )
+        self._table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
 
     def set_plan(self, plan: QueryPlan) -> None:
         self._plan = plan
@@ -208,6 +209,16 @@ class DataTableView(QWidget):
         if plan.partial_data_warnings:
             status += f" (partial data: {'; '.join(plan.partial_data_warnings)})"
         self.show_normal(status)
+
+    def toggle_sort(self) -> None:
+        self._order = "desc" if self._order == "asc" else "asc"
+        if self._plan is not None:
+            self._refresh()
+
+    def _on_header_clicked(self, section: int) -> None:
+        # Only `ts` (column index 1, after `tool_id` at 0) is sortable.
+        if section == 1:
+            self.toggle_sort()
 
     def ensure_row_loaded(self, row: int) -> None:
         plan = self._plan

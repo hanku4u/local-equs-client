@@ -204,3 +204,19 @@ def test_scroll_to_offset_triggers_new_page_fetch(qapp) -> None:
 
     # Page index 12 (rows 2400–2599), so offset = 2400.
     assert engine.fetch_calls[-1] == (engine.count_calls[0], 2400, 200, "asc")
+
+
+def test_clicking_ts_header_toggles_order_and_refetches(qapp) -> None:
+    page = pa.Table.from_pydict(
+        {"tool_id": ["a"], "ts": ["2026-01-01"], "chamber_pressure": [1.0]}
+    )
+    engine = _FakeEngine(count_value=10, page_table=page)
+    view = DataTableView(engine=engine)
+    view.set_plan(_plan([("a", ("chamber_pressure",))]))
+    assert engine.fetch_calls[-1][3] == "asc"
+
+    view.toggle_sort()
+    assert engine.fetch_calls[-1] == (engine.count_calls[0], 0, 200, "desc")
+
+    view.toggle_sort()
+    assert engine.fetch_calls[-1] == (engine.count_calls[0], 0, 200, "asc")
