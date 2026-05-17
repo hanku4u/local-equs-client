@@ -8,7 +8,8 @@ fetch through :class:`RawQueryEngine`. ``ts`` is the only sortable column.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Callable
+from typing import Literal, Protocol
 
 import pyarrow as pa
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
@@ -16,12 +17,14 @@ from PySide6.QtWidgets import QHeaderView, QLabel, QTableView, QVBoxLayout, QWid
 
 from local_equs_client.data_layer.query_planner import QueryPlan
 
-if TYPE_CHECKING:
-    pass
-
 
 class _Engine(Protocol):
-    def count(self, plan: QueryPlan, *, cancelled: object = None) -> int: ...
+    def count(
+        self,
+        plan: QueryPlan,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> int: ...
 
     def fetch_page(
         self,
@@ -29,8 +32,8 @@ class _Engine(Protocol):
         *,
         offset: int,
         limit: int,
-        order: str = "asc",
-        cancelled: object = None,
+        order: Literal["asc", "desc"] = "asc",
+        cancelled: Callable[[], bool] | None = None,
     ) -> pa.Table: ...
 
 _PAGE_SIZE = 200
@@ -156,7 +159,7 @@ class DataTableView(QWidget):
         super().__init__(parent)
         self._engine = engine
         self._plan: QueryPlan | None = None
-        self._order: str = "asc"
+        self._order: Literal["asc", "desc"] = "asc"
         self._active: bool = True
         self._dirty: bool = False
 
@@ -226,7 +229,10 @@ class DataTableView(QWidget):
         self.show_normal(status)
 
     def toggle_sort(self) -> None:
-        self._order = "desc" if self._order == "asc" else "asc"
+        if self._order == "asc":
+            self._order = "desc"
+        else:
+            self._order = "asc"
         if self._plan is not None:
             self._refresh()
 
