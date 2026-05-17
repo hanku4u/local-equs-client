@@ -308,3 +308,47 @@ def test_ctrl_c_copies_selection_as_tsv(qapp) -> None:
     view.copy_selection_as_tsv()
     text = QGuiApplication.clipboard().text(QClipboard.Mode.Clipboard)
     assert text == "1.5\n2.5"
+
+
+def test_data_table_end_to_end_with_real_engine(qapp, tmp_path) -> None:
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    from local_equs_client.data_layer.raw_query_engine import RawQueryEngine
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    parquet = tmp_path / "a.parquet"
+    naive_start = start.astimezone(UTC).replace(tzinfo=None)
+    n_rows = 600
+    timestamps = [naive_start + timedelta(seconds=i / 10) for i in range(n_rows)]
+    rng = np.random.default_rng(seed=1)
+    pq.write_table(
+        pa.Table.from_pydict(
+            {
+                "ts": pa.array(timestamps, type=pa.timestamp("ns")),
+                "chamber_pressure": pa.array(rng.random(n_rows), type=pa.float64()),
+            }
+        ),
+        parquet,
+    )
+
+    plan = QueryPlan(
+        per_tool_queries=[
+            ToolQuery(
+                tool_id="a",
+                file_paths=(parquet,),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=60)),
+            )
+        ],
+        target_resolution=timedelta(seconds=1),
+        partial_data_warnings=[],
+    )
+
+    view = DataTableView(engine=RawQueryEngine())
+    view.set_plan(plan)
+
+    assert view._model.rowCount() == n_rows  # noqa: SLF001
+    assert view._model.columnCount() == 3  # noqa: SLF001 — tool_id, ts, chamber_pressure
+    view.ensure_row_loaded(400)
+    assert view._model._page_offset == 400  # noqa: SLF001
