@@ -38,7 +38,7 @@ class RawQueryEngine:
         cancelled: Callable[[], bool] | None = None,
     ) -> int:
         is_cancelled = cancelled or (lambda: False)
-        if not plan.per_tool_queries:
+        if not plan.per_tool_queries or not _any_file_paths(plan.per_tool_queries):
             return 0
         union_sql = _build_union_sql(plan.per_tool_queries, displayed_columns=())
         sql = f"SELECT COUNT(*) FROM (\n{union_sql}\n)"
@@ -63,7 +63,7 @@ class RawQueryEngine:
         cancelled: Callable[[], bool] | None = None,
     ) -> pa.Table:
         is_cancelled = cancelled or (lambda: False)
-        if not plan.per_tool_queries:
+        if not plan.per_tool_queries or not _any_file_paths(plan.per_tool_queries):
             return pa.table({})
         displayed = _displayed_columns(plan.per_tool_queries)
         union_sql = _build_union_sql(plan.per_tool_queries, displayed)
@@ -83,6 +83,10 @@ class RawQueryEngine:
             return table
         finally:
             conn.close()
+
+
+def _any_file_paths(queries: list[ToolQuery]) -> bool:
+    return any(q.file_paths for q in queries)
 
 
 def _displayed_columns(queries: list[ToolQuery]) -> tuple[str, ...]:

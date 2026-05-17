@@ -48,6 +48,23 @@ def test_count_empty_plan_returns_zero() -> None:
     assert engine.count(_make_plan([])) == 0
 
 
+def test_count_plan_with_all_empty_file_paths_returns_zero() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    engine = RawQueryEngine()
+    plan = _make_plan(
+        [
+            ToolQuery(
+                tool_id="a",
+                file_paths=(),
+                raw_columns=("chamber_pressure",),
+                time_range=TimeRange(start=start, end=start + timedelta(seconds=5)),
+            )
+        ]
+    )
+    assert engine.count(plan) == 0
+    assert engine.fetch_page(plan, offset=0, limit=10).num_rows == 0
+
+
 def test_count_single_tool_in_range(tmp_path: Path) -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     parquet = tmp_path / "a.parquet"
