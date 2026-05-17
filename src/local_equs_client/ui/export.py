@@ -120,7 +120,7 @@ def _time_column_name(table: pa.Table) -> str:
     for candidate in ("bucket", "ts"):
         if candidate in table.column_names:
             return candidate
-    return table.column_names[0]
+    return str(table.column_names[0])
 
 
 def _format_ts(scalar: pa.Scalar) -> str:
