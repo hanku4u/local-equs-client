@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_equs_client.data_layer import telemetry_client
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
 from local_equs_client.data_layer.update_manager import ManifestFile
@@ -80,23 +81,31 @@ class DownloadManager:
                 for chunk in iter(lambda: f.read(_CHUNK_SIZE), b""):
                     sha.update(chunk)
 
-        headers: dict[str, str] = {}
-        if existing > 0:
-            headers["Range"] = f"bytes={existing}-"
+        telemetry_client.event(
+            "download_started",
+            file_id=manifest_file.file_id,
+            resuming=existing > 0,
+            existing_bytes=existing,
+        )
 
-        resp = self._http.get(manifest_file.url, headers=headers, stream=True)
-
-        if resp.status_code == 200 and existing > 0:
-            # Server didn't honor Range; discard whatever we had and start over.
-            logger.info(
-                "Range not honored for %s; restarting from byte 0", manifest_file.file_id
-            )
-            existing = 0
-            sha = hashlib.sha256()
-            partial.unlink(missing_ok=True)
-
-        bytes_written = existing
         try:
+            headers: dict[str, str] = {}
+            if existing > 0:
+                headers["Range"] = f"bytes={existing}-"
+
+            resp = self._http.get(manifest_file.url, headers=headers, stream=True)
+
+            if resp.status_code == 200 and existing > 0:
+                # Server didn't honor Range; discard whatever we had and start over.
+                logger.info(
+                    "Range not honored for %s; restarting from byte 0",
+                    manifest_file.file_id,
+                )
+                existing = 0
+                sha = hashlib.sha256()
+                partial.unlink(missing_ok=True)
+
+            bytes_written = existing
             if cancelled is not None and cancelled():
                 raise DownloadCancelled(manifest_file.file_id)
             with partial.open("ab") as f:
@@ -108,22 +117,35 @@ class DownloadManager:
                     f.write(chunk)
                     sha.update(chunk)
                     bytes_written += len(chunk)
+
+            actual_sha = sha.hexdigest()
+            if manifest_file.sha256:
+                if actual_sha != manifest_file.sha256:
+                    partial.unlink(missing_ok=True)
+                    raise ChecksumMismatch(
+                        manifest_file.file_id, manifest_file.sha256, actual_sha
+                    )
+
+            partial.replace(target)
+            self._index_after_download(manifest_file, actual_sha)
+
         except DownloadCancelled:
+            # User-initiated cancel — not a failure; no telemetry.
             raise
-        except Exception:
-            # Network drop, disk full, etc — leave the partial in place for retry.
+        except Exception as exc:
+            telemetry_client.event(
+                "download_failed",
+                file_id=manifest_file.file_id,
+                error_type=type(exc).__name__,
+                partial_bytes=(partial.stat().st_size if partial.exists() else 0),
+            )
             raise
 
-        actual_sha = sha.hexdigest()
-        if manifest_file.sha256:
-            if actual_sha != manifest_file.sha256:
-                partial.unlink(missing_ok=True)
-                raise ChecksumMismatch(
-                    manifest_file.file_id, manifest_file.sha256, actual_sha
-                )
-
-        partial.replace(target)
-        self._index_after_download(manifest_file, actual_sha)
+        telemetry_client.event(
+            "download_completed",
+            file_id=manifest_file.file_id,
+            bytes_written=bytes_written,
+        )
 
         return DownloadResult(
             file_id=manifest_file.file_id,
