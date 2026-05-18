@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from local_equs_client.config import logging as app_logging
 from local_equs_client.config import settings as settings_module
-from local_equs_client.data_layer import app_telemetry, telemetry_client
+from local_equs_client.data_layer import app_telemetry, crash_handler, telemetry_client
 from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     """Boot the data layer and run the Qt event loop."""
     app_logging.configure_logging()
+    crash_handler.install()
     settings = settings_module.get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
