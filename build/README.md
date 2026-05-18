@@ -51,12 +51,39 @@ that single function is the build's source of truth. Bumping the
 project version in `pyproject.toml` automatically updates the .exe
 metadata on the next build.
 
+## C6.2 — Inno Setup installer
+
+Wraps the Nuitka folder from C6.1 into `dist/LocalEQUS-Setup-{version}.exe`.
+
+### One-time setup
+
+Install **Inno Setup 6** from https://jrsoftware.org/isinfo.php. The
+driver looks for `iscc.exe` in the default install path; if you
+installed it somewhere else, set `$ISCC` to the full path.
+
+### Build the installer
+
+```cmd
+build\nuitka.cmd          REM produces dist\LocalEQUS\
+build\installer.cmd       REM produces dist\LocalEQUS-Setup-X.Y.Z.exe
+```
+
+The installer is **per-user** (no UAC prompt, installs to
+`%LOCALAPPDATA%\Programs\LocalEQUS`), registers in Add/Remove Programs,
+adds a Start Menu shortcut, and offers a "Launch LocalEQUS" checkbox on
+the final wizard page. Silent installs (`/SILENT`, `/VERYSILENT`) skip
+the launch checkbox automatically.
+
+User state under `%LOCALAPPDATA%\LocalEQUS\` (config.toml, state.db,
+telemetry queue) is **not** removed on uninstall — that's intentional.
+
 ## Layout
 
-- `nuitka.cmd` — Windows entry point. Calls `build_config.py`.
-- `build_config.py` — Nuitka command-line assembly + runner.
-- `installer.iss` — Inno Setup script wrapping the Nuitka output (C6.2,
-  not yet present).
+- `nuitka.cmd` — Windows entry for the Nuitka build.
+- `build_config.py` — Nuitka command-line assembly + post-build folder rename.
+- `installer.cmd` — Windows entry for the installer compile.
+- `build_installer.py` — `iscc.exe` discovery + invocation.
+- `installer.iss` — declarative Inno Setup configuration.
 - `sign.cmd` — Authenticode signing of executable + installer (C6.3,
   not yet present).
 
