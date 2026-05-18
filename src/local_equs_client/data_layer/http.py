@@ -101,6 +101,27 @@ class HttpClient:
         self._raise_for_status(resp, url)
         return resp
 
+    def post(
+        self,
+        path: str,
+        *,
+        json: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        url = self._url(path)
+        try:
+            resp = self._session.post(
+                url,
+                timeout=self._timeout,
+                headers=headers,
+                json=json,
+            )
+        except requests.RequestException as exc:
+            raise ServerUnreachable(str(exc)) from exc
+
+        self._raise_for_status(resp, url)
+        return resp
+
     def close(self) -> None:
         self._session.close()
 
