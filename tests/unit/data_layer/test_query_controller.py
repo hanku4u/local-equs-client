@@ -288,3 +288,123 @@ def test_set_tool_priority_threaded_to_engine() -> None:
     _run_submitted(runner)
 
     assert engine.priorities[-1] == ["b", "a"]
+
+
+# --- C5.13: telemetry events --------------------------------------------
+
+
+from datetime import UTC, datetime  # noqa: E402
+
+import pytest  # noqa: E402
+
+from local_equs_client.data_layer import telemetry_client  # noqa: E402
+from local_equs_client.data_layer.query_planner import ToolQuery  # noqa: E402
+from local_equs_client.selection.types import TimeRange  # noqa: E402
+
+
+class _RecordingClient:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def event(self, type: str, **data: Any) -> None:
+        self.events.append((type, dict(data)))
+
+
+@pytest.fixture
+def _telemetry_recorder():
+    rec = _RecordingClient()
+    telemetry_client.set_client(rec)  # type: ignore[arg-type]
+    yield rec
+    telemetry_client.set_client(None)
+
+
+class _RichPlanner(_StubPlanner):
+    """Planner that returns a non-empty plan reflecting the snapshot."""
+
+    def plan(self, selection: Any, mode: Any, viewport_width: int) -> QueryPlan:
+        self.calls.append((selection, mode, viewport_width))
+        return QueryPlan(
+            per_tool_queries=[
+                ToolQuery(
+                    tool_id="a",
+                    file_paths=(),
+                    raw_columns=("chamber_pressure", "rf_power"),
+                    time_range=selection.time_range,
+                ),
+                ToolQuery(
+                    tool_id="b",
+                    file_paths=(),
+                    raw_columns=("chamber_pressure",),
+                    time_range=selection.time_range,
+                ),
+            ],
+            target_resolution=timedelta(seconds=5),
+            partial_data_warnings=[],
+        )
+
+
+def _make_rich_controller(
+    *, engine_raises: Exception | None = None
+) -> tuple[QueryController, SelectionModel, _RichPlanner, _StubEngine, _SyncRunner]:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    model = SelectionModel()
+    model.set_time_range(TimeRange(start=start, end=start + timedelta(seconds=60)))
+    planner = _RichPlanner()
+    engine = _StubEngine(raise_=engine_raises)
+    runner = _SyncRunner()
+    controller = QueryController(model, planner, engine, runner=runner)
+    return controller, model, planner, engine, runner
+
+
+def test_query_run_event_emitted_on_completion(_telemetry_recorder) -> None:
+    controller, _model, _planner, _engine, runner = _make_rich_controller()
+    controller.trigger()
+    _run_submitted(runner)
+
+    [(name, payload)] = _telemetry_recorder.events
+    assert name == "query_run"
+    assert payload["tool_count"] == 2
+    assert payload["sensor_count"] == 2  # chamber_pressure, rf_power (unique)
+    assert payload["range_seconds"] == 60
+    assert payload["resolution_seconds"] == 5.0
+    assert isinstance(payload["latency_ms"], int)
+    assert payload["latency_ms"] >= 0
+
+
+def test_query_failed_event_emitted_on_engine_exception(
+    _telemetry_recorder,
+) -> None:
+    boom = RuntimeError("boom")
+    controller, _model, _planner, _engine, runner = _make_rich_controller(
+        engine_raises=boom
+    )
+    controller.trigger()
+    _run_submitted(runner)
+
+    [(name, payload)] = _telemetry_recorder.events
+    assert name == "query_failed"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["partial_results"] is False
+
+
+def test_query_cancelled_emits_no_telemetry(_telemetry_recorder) -> None:
+    controller, _model, _planner, _engine, runner = _make_rich_controller()
+    controller.trigger()
+    job = runner.submitted[-1]
+    job.request_cancel()
+    _run_submitted(runner)
+
+    assert _telemetry_recorder.events == []
+
+
+def test_query_run_sensor_count_dedupes_across_tools(
+    _telemetry_recorder,
+) -> None:
+    controller, _model, _planner, _engine, runner = _make_rich_controller()
+    controller.trigger()
+    _run_submitted(runner)
+
+    [(_, payload)] = _telemetry_recorder.events
+    # Tool "a" has {chamber_pressure, rf_power}; tool "b" has
+    # {chamber_pressure}. Union = 2 unique sensors.
+    assert payload["sensor_count"] == 2

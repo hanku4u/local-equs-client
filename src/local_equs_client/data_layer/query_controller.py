@@ -11,17 +11,35 @@ controller only ever emits ``queryCompleted`` for the latest dispatch.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from local_equs_client.data_layer import telemetry_client
 from local_equs_client.data_layer.query_engine import QueryCancelled, QueryEngine
 from local_equs_client.data_layer.query_planner import QueryPlan, QueryPlanner
 from local_equs_client.data_layer.threading import BackgroundJob, JobRunner
 from local_equs_client.selection.selection_model import SelectionModel
-from local_equs_client.selection.types import ViewMode
+from local_equs_client.selection.types import Selection, ViewMode
 from local_equs_client.selection.view_controller import ViewController
+
+
+def _query_run_payload(
+    plan: QueryPlan, snapshot: Selection, latency_ms: int
+) -> dict[str, Any]:
+    unique_sensors = {col for q in plan.per_tool_queries for col in q.raw_columns}
+    range_seconds = int(
+        (snapshot.time_range.end - snapshot.time_range.start).total_seconds()
+    )
+    return {
+        "tool_count": len(plan.per_tool_queries),
+        "sensor_count": len(unique_sensors),
+        "range_seconds": range_seconds,
+        "resolution_seconds": plan.target_resolution.total_seconds(),
+        "latency_ms": latency_ms,
+    }
 
 
 class _QueryJob(BackgroundJob):
@@ -136,19 +154,29 @@ class QueryController(QObject):
 
         job = _QueryJob(self._engine, plan)
         captured_plan = plan
+        captured_snapshot = snapshot
         captured_job = job
+        start_monotonic = time.monotonic()
+        tools_completed = 0
 
         def _on_tool_done(tool_id: str, result: Any) -> None:
             # Called from the engine worker thread; Qt queues the signal to
             # whichever thread the slot is on.
+            nonlocal tools_completed
             if captured_job is not self._current_job:
                 return  # stale dispatch
+            tools_completed += 1
             self.toolCompleted.emit(captured_plan, tool_id, result)
 
         def _on_finished(result: object) -> None:
             if captured_job is not self._current_job:
                 return
             self._current_job = None
+            latency_ms = int((time.monotonic() - start_monotonic) * 1000)
+            telemetry_client.event(
+                "query_run",
+                **_query_run_payload(captured_plan, captured_snapshot, latency_ms),
+            )
             self.queryCompleted.emit(captured_plan, result)
 
         def _on_failed(exc: object) -> None:
@@ -157,6 +185,11 @@ class QueryController(QObject):
             self._current_job = None
             if isinstance(exc, QueryCancelled):
                 return
+            telemetry_client.event(
+                "query_failed",
+                error_type=type(exc).__name__,
+                partial_results=tools_completed > 0,
+            )
             self.queryFailed.emit(exc)
 
         job.on_tool_complete = _on_tool_done
