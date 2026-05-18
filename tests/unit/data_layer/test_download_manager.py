@@ -187,3 +187,121 @@ def test_no_sha_in_manifest_skips_verification(env) -> None:
     assert (data_dir / "etch_a1.parquet").read_bytes() == body
     assert result.sha256  # still computed for the index
     assert library.all_files()[0].sha256 == result.sha256
+
+
+# --- C5.14: telemetry events --------------------------------------------
+
+
+from typing import Any  # noqa: E402
+
+from local_equs_client.data_layer import telemetry_client  # noqa: E402
+
+
+class _RecordingClient:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def event(self, type: str, **data: Any) -> None:
+        self.events.append((type, dict(data)))
+
+
+@pytest.fixture
+def _telemetry_recorder():
+    rec = _RecordingClient()
+    telemetry_client.set_client(rec)  # type: ignore[arg-type]
+    yield rec
+    telemetry_client.set_client(None)
+
+
+def _events_of(rec: _RecordingClient, name: str) -> list[dict]:
+    return [data for n, data in rec.events if n == name]
+
+
+@responses.activate
+def test_download_emits_started_and_completed(env, _telemetry_recorder) -> None:
+    manager, _library, _data_dir = env
+    body = _make_parquet_bytes()
+    mf = _mf("etch_a1.parquet", body)
+    responses.add(responses.GET, f"{_BASE}{mf.url}", body=body, status=200)
+
+    manager.download_file(mf)
+
+    started = _events_of(_telemetry_recorder, "download_started")
+    completed = _events_of(_telemetry_recorder, "download_completed")
+    assert len(started) == 1
+    assert started[0]["file_id"] == "etch_a1.parquet"
+    assert started[0]["resuming"] is False
+    assert started[0]["existing_bytes"] == 0
+    assert len(completed) == 1
+    assert completed[0]["file_id"] == "etch_a1.parquet"
+    assert completed[0]["bytes_written"] == len(body)
+
+
+@responses.activate
+def test_download_started_reports_resuming_when_partial_exists(
+    env, _telemetry_recorder
+) -> None:
+    manager, _library, data_dir = env
+    body = _make_parquet_bytes()
+    mf = _mf("etch_a1.parquet", body)
+    partial = data_dir / "etch_a1.parquet.partial"
+    partial.write_bytes(body[:100])  # pretend a previous attempt got 100 bytes
+    responses.add(
+        responses.GET,
+        f"{_BASE}{mf.url}",
+        body=body[100:],
+        status=206,
+        headers={"Content-Range": f"bytes 100-{len(body) - 1}/{len(body)}"},
+    )
+
+    manager.download_file(mf)
+
+    started = _events_of(_telemetry_recorder, "download_started")[0]
+    assert started["resuming"] is True
+    assert started["existing_bytes"] == 100
+
+
+@responses.activate
+def test_download_failed_event_on_checksum_mismatch(
+    env, _telemetry_recorder
+) -> None:
+    manager, _library, _data_dir = env
+    body = _make_parquet_bytes()
+    mf = ManifestFile(
+        file_id="etch_a1.parquet",
+        tool_id="etch_a1",
+        url="/v1/data/etch_a1.parquet",
+        sha256="0" * 64,  # wrong sha
+        size_bytes=len(body),
+    )
+    responses.add(responses.GET, f"{_BASE}{mf.url}", body=body, status=200)
+
+    with pytest.raises(ChecksumMismatch):
+        manager.download_file(mf)
+
+    failed = _events_of(_telemetry_recorder, "download_failed")
+    completed = _events_of(_telemetry_recorder, "download_completed")
+    assert len(failed) == 1
+    assert failed[0]["file_id"] == "etch_a1.parquet"
+    assert failed[0]["error_type"] == "ChecksumMismatch"
+    assert completed == []
+
+
+@responses.activate
+def test_download_cancelled_emits_no_failed_event(
+    env, _telemetry_recorder
+) -> None:
+    manager, _library, _data_dir = env
+    body = _make_parquet_bytes()
+    mf = _mf("etch_a1.parquet", body)
+    responses.add(responses.GET, f"{_BASE}{mf.url}", body=body, status=200)
+
+    with pytest.raises(DownloadCancelled):
+        manager.download_file(mf, cancelled=lambda: True)
+
+    started = _events_of(_telemetry_recorder, "download_started")
+    failed = _events_of(_telemetry_recorder, "download_failed")
+    completed = _events_of(_telemetry_recorder, "download_completed")
+    assert len(started) == 1
+    assert failed == []
+    assert completed == []

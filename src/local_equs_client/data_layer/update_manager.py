@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from local_equs_client.data_layer import telemetry_client
 from local_equs_client.data_layer.http import HttpClient, NotFound
 from local_equs_client.data_layer.local_library import LocalFile, LocalLibrary
 from local_equs_client.state.dao import manifest_cache
@@ -74,11 +75,13 @@ class UpdateManager:
                 logger.warning("Server returned 304 with no cached body; refetching")
                 resp = self._http.get(_MANIFEST_PATH)
             else:
+                telemetry_client.event("update_check", cache_hit=True)
                 return cached_body
 
         body = resp.json()
         new_etag = resp.headers.get("ETag")
         manifest_cache.store(self._conn, body, new_etag)
+        telemetry_client.event("update_check", cache_hit=False)
         return body
 
     def compute_updates(self, manifest: Any | None = None) -> UpdateDiff:

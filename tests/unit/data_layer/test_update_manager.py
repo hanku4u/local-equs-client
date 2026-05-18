@@ -104,6 +104,64 @@ def test_not_found_propagates(conn) -> None:
         _make_manager(conn).fetch_manifest()
 
 
+# --- C5.14: telemetry events --------------------------------------------
+
+
+from typing import Any  # noqa: E402
+
+from local_equs_client.data_layer import telemetry_client  # noqa: E402
+
+
+class _RecordingClient:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def event(self, type: str, **data: Any) -> None:
+        self.events.append((type, dict(data)))
+
+
+@pytest.fixture
+def _telemetry_recorder():
+    rec = _RecordingClient()
+    telemetry_client.set_client(rec)  # type: ignore[arg-type]
+    yield rec
+    telemetry_client.set_client(None)
+
+
+@responses.activate
+def test_update_check_event_emitted_on_first_fetch(
+    conn, _telemetry_recorder
+) -> None:
+    payload = {"version": 1, "files": []}
+    responses.add(
+        responses.GET, f"{_BASE}{_PATH}", json=payload, headers={"ETag": '"v1"'}
+    )
+
+    _make_manager(conn).fetch_manifest()
+
+    assert _telemetry_recorder.events == [("update_check", {"cache_hit": False})]
+
+
+@responses.activate
+def test_update_check_event_reports_cache_hit_on_304(
+    conn, _telemetry_recorder
+) -> None:
+    initial = {"version": 1, "files": []}
+    responses.add(
+        responses.GET, f"{_BASE}{_PATH}", json=initial, headers={"ETag": '"v1"'}
+    )
+    responses.add(responses.GET, f"{_BASE}{_PATH}", status=304)
+
+    manager = _make_manager(conn)
+    manager.fetch_manifest()  # cache_hit=False
+    manager.fetch_manifest()  # cache_hit=True
+
+    assert _telemetry_recorder.events == [
+        ("update_check", {"cache_hit": False}),
+        ("update_check", {"cache_hit": True}),
+    ]
+
+
 # --- C2.5 diff ---------------------------------------------------------------
 
 
