@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -209,11 +211,58 @@ class UpdateClient:
         return out_path
 
 
+def hand_off(
+    installer_path: Path,
+    *,
+    quit_callback: Callable[[], None] | None = None,
+    spawn: Callable[..., object] | None = None,
+) -> None:
+    """Run the downloaded installer in silent mode, then quit the running app (C6.5).
+
+    Uses Windows Restart Manager via ``/CLOSEAPPLICATIONS
+    /RESTARTAPPLICATIONS`` so Inno Setup closes our app gracefully,
+    overwrites the bundled files, and relaunches the new version
+    independently of the installer's postinstall ``[Run]`` block (which
+    is suppressed by ``skipifsilent``).
+
+    ``spawn`` is an injection point for tests; defaults to
+    :func:`subprocess.Popen`. ``quit_callback`` is invoked after the
+    installer is spawned — typically ``QApplication.instance().quit``.
+
+    Raises:
+        ``FileNotFoundError`` if ``installer_path`` doesn't exist.
+    """
+    if not installer_path.is_file():
+        raise FileNotFoundError(f"Cannot hand off: {installer_path} is missing.")
+
+    cmd = [
+        str(installer_path),
+        "/SILENT",
+        "/CLOSEAPPLICATIONS",
+        "/RESTARTAPPLICATIONS",
+    ]
+    creation_flags = 0
+    if sys.platform == "win32":
+        # Detach so the parent process can exit immediately; the
+        # installer is now Restart Manager's problem.
+        creation_flags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        )
+
+    spawn_fn = spawn or subprocess.Popen
+    logger.info("Handing off to installer: %s", installer_path)
+    spawn_fn(cmd, close_fds=True, creationflags=creation_flags)
+
+    if quit_callback is not None:
+        quit_callback()
+
+
 __all__ = [
     "AvailableVersion",
     "ChecksumMismatch",
     "UpdateCancelled",
     "UpdateClient",
+    "hand_off",
     "is_newer",
     "updates_dir",
 ]

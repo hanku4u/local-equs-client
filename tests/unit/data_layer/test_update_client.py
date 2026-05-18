@@ -217,3 +217,57 @@ def test_download_cancelled_deletes_partial(_isolated_app_dir: Path) -> None:
     out = _isolated_app_dir / "updates" / "LocalEQUS-Setup-1.2.3.exe"
     assert not out.exists()
     assert not out.with_suffix(out.suffix + ".partial").exists()
+
+
+# --- hand_off ----------------------------------------------------------
+
+
+def test_hand_off_spawns_installer_with_restart_manager_flags(tmp_path: Path) -> None:
+    installer = tmp_path / "LocalEQUS-Setup-1.2.3.exe"
+    installer.write_bytes(b"fake")
+    captured: list[tuple[list[str], dict]] = []
+
+    def fake_spawn(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append((cmd, kwargs))
+        return object()
+
+    update_client.hand_off(installer, spawn=fake_spawn)
+
+    [(cmd, _kwargs)] = captured
+    assert cmd[0] == str(installer)
+    assert "/SILENT" in cmd
+    assert "/CLOSEAPPLICATIONS" in cmd
+    assert "/RESTARTAPPLICATIONS" in cmd
+
+
+def test_hand_off_invokes_quit_callback_after_spawn(tmp_path: Path) -> None:
+    installer = tmp_path / "setup.exe"
+    installer.write_bytes(b"fake")
+    spawned: list[list[str]] = []
+    quit_calls: list[int] = []
+
+    def fake_spawn(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        spawned.append(list(cmd))
+        return object()
+
+    update_client.hand_off(
+        installer, spawn=fake_spawn, quit_callback=lambda: quit_calls.append(1)
+    )
+
+    assert len(spawned) == 1
+    assert quit_calls == [1]
+
+
+def test_hand_off_without_quit_callback_is_fine(tmp_path: Path) -> None:
+    installer = tmp_path / "setup.exe"
+    installer.write_bytes(b"fake")
+
+    update_client.hand_off(installer, spawn=lambda cmd, **_: object())
+    # No assertion needed beyond "doesn't raise"; the call completing
+    # without a quit_callback proves the optionality.
+
+
+def test_hand_off_raises_when_installer_missing(tmp_path: Path) -> None:
+    installer = tmp_path / "no-such-installer.exe"
+    with pytest.raises(FileNotFoundError):
+        update_client.hand_off(installer, spawn=lambda cmd, **_: object())

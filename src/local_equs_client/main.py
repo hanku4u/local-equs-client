@@ -171,11 +171,35 @@ def _prompt_if_update_available(
         QMessageBox.warning(parent_widget, "Update failed", str(exc))
         return
 
-    QMessageBox.information(
+    install_choice = QMessageBox.question(
         parent_widget,
-        "Update downloaded",
-        f"Saved {out_path}.\n\nThe installer will launch in a later release.",
+        "Update ready to install",
+        (
+            f"Local EQUS {available.version} is ready to install.\n\n"
+            "The app will close and restart automatically. Install now?"
+        ),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
     )
+    if install_choice != QMessageBox.StandardButton.Yes:
+        logger.info(
+            "User deferred install of %s; installer left at %s",
+            available.version,
+            out_path,
+        )
+        return
+
+    from PySide6.QtWidgets import QApplication
+
+    qapp = QApplication.instance()
+    try:
+        update_client.hand_off(
+            out_path,
+            quit_callback=qapp.quit if qapp is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Update hand-off failed: %s", exc)
+        QMessageBox.warning(parent_widget, "Install failed", str(exc))
 
 
 if __name__ == "__main__":
