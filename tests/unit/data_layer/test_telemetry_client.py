@@ -187,3 +187,95 @@ def test_module_level_event_routes_to_registered_client(
 
     telemetry_client.event("a", k="v")
     assert telemetry_client.flush() == 1
+
+
+# ----- Backoff -------------------------------------------------------------
+
+
+def test_backoff_for_zero_failures_is_zero() -> None:
+    assert telemetry_client._backoff_for(0) == 0.0
+
+
+def test_backoff_for_one_failure_is_60s() -> None:
+    assert telemetry_client._backoff_for(1) == 60.0
+
+
+def test_backoff_steps_through_schedule() -> None:
+    assert telemetry_client._backoff_for(1) == 60.0
+    assert telemetry_client._backoff_for(2) == 120.0
+    assert telemetry_client._backoff_for(3) == 300.0
+    assert telemetry_client._backoff_for(4) == 900.0
+
+
+def test_backoff_caps_at_steady_state() -> None:
+    assert telemetry_client._backoff_for(5) == 900.0
+    assert telemetry_client._backoff_for(99) == 900.0
+
+
+@responses.activate
+def test_flush_during_backoff_window_is_skipped(_isolated_app_dir: Path) -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=503)
+    conn = _conn(_isolated_app_dir)
+    client = telemetry_client.Telemetry(conn, _http())
+    client.event("a")
+
+    # First flush fails → starts a 60s backoff.
+    assert client.flush() == 0
+    assert client._consecutive_failures == 1
+    assert len(responses.calls) == 1
+
+    # Second flush is within the window → no extra POST.
+    assert client.flush() == 0
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_flush_after_backoff_expires_retries(_isolated_app_dir: Path) -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=503)
+    conn = _conn(_isolated_app_dir)
+    client = telemetry_client.Telemetry(conn, _http())
+    client.event("a")
+
+    client.flush()
+    # Move past the backoff window.
+    client._next_flush_at_monotonic = 0.0
+    client.flush()
+
+    assert client._consecutive_failures == 2
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_successful_flush_resets_backoff(_isolated_app_dir: Path) -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=503)
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", json={"ok": True})
+
+    conn = _conn(_isolated_app_dir)
+    client = telemetry_client.Telemetry(conn, _http())
+    client.event("a")
+
+    client.flush()  # 503 → failures = 1
+    assert client._consecutive_failures == 1
+
+    client._next_flush_at_monotonic = 0.0
+    client.flush()  # 2xx → reset
+    assert client._consecutive_failures == 0
+    assert client._next_flush_at_monotonic == 0.0
+
+
+@responses.activate
+def test_4xx_resets_backoff_after_dropping_batch(_isolated_app_dir: Path) -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=503)
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=400)
+
+    conn = _conn(_isolated_app_dir)
+    client = telemetry_client.Telemetry(conn, _http())
+    client.event("a")
+    client.event("b")
+
+    client.flush()  # 503
+    assert client._consecutive_failures == 1
+
+    client._next_flush_at_monotonic = 0.0
+    client.flush()  # 400 drops batch, treated as "server is up"
+    assert client._consecutive_failures == 0

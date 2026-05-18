@@ -4,16 +4,25 @@ Events are enqueued synchronously by any thread that holds the SQLite
 connection. :func:`peek_batch` reads up to ``limit`` of the oldest
 events without removing them, so a failed POST can be retried later;
 :func:`delete_batch` clears them only on successful flush.
+
+A FIFO cap (:data:`MAX_QUEUE_ROWS`) caps the queue so an unreachable
+endpoint can't grow the SQLite file unbounded — when ``enqueue`` would
+exceed the cap, the oldest rows are evicted before the new row lands.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+MAX_QUEUE_ROWS = 10_000
 
 
 @dataclass(frozen=True)
@@ -25,7 +34,26 @@ class QueuedEvent:
 
 
 def enqueue(conn: sqlite3.Connection, *, type: str, data: dict[str, Any]) -> int:
-    """Persist one event and return its row id."""
+    """Persist one event and return its row id.
+
+    If the queue is already at :data:`MAX_QUEUE_ROWS`, evict the oldest
+    rows first so the count stays bounded after this insert.
+    """
+    current = count(conn)
+    if current >= MAX_QUEUE_ROWS:
+        evict_n = current - MAX_QUEUE_ROWS + 1
+        conn.execute(
+            "DELETE FROM telemetry_queue WHERE id IN ("
+            "SELECT id FROM telemetry_queue ORDER BY id ASC LIMIT ?"
+            ")",
+            (int(evict_n),),
+        )
+        logger.warning(
+            "telemetry_queue: evicted %d oldest event(s) to stay under cap %d",
+            evict_n,
+            MAX_QUEUE_ROWS,
+        )
+
     payload = json.dumps(data, default=str)
     cursor = conn.execute(
         "INSERT INTO telemetry_queue (type, payload_json, created_at) VALUES (?, ?, ?)",

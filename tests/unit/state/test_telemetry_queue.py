@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from local_equs_client.state import db
 from local_equs_client.state.dao import telemetry_queue
 
@@ -82,3 +84,40 @@ def test_event_payload_round_trips_nested_dict(tmp_path: Path) -> None:
     telemetry_queue.enqueue(conn, type="t", data=payload)
     batch = telemetry_queue.peek_batch(conn, limit=1)
     assert batch[0].data == payload
+
+
+def test_enqueue_evicts_oldest_when_cap_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    conn = _open(tmp_path)
+    monkeypatch.setattr(telemetry_queue, "MAX_QUEUE_ROWS", 3)
+
+    a = telemetry_queue.enqueue(conn, type="a", data={})
+    b = telemetry_queue.enqueue(conn, type="b", data={})
+    c = telemetry_queue.enqueue(conn, type="c", data={})
+    assert telemetry_queue.count(conn) == 3
+
+    # This insert should evict the oldest (id == a).
+    with caplog.at_level("WARNING"):
+        d = telemetry_queue.enqueue(conn, type="d", data={})
+
+    remaining_ids = [e.id for e in telemetry_queue.peek_batch(conn, limit=10)]
+    assert a not in remaining_ids
+    assert remaining_ids == [b, c, d]
+    assert telemetry_queue.count(conn) == 3
+    assert any("evicted" in rec.message for rec in caplog.records)
+
+
+def test_enqueue_evicts_multiple_when_queue_overfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If somehow MAX_QUEUE_ROWS shrinks below the existing count, catch up
+    by evicting enough rows in a single enqueue call."""
+    conn = _open(tmp_path)
+    monkeypatch.setattr(telemetry_queue, "MAX_QUEUE_ROWS", 5)
+    for i in range(5):
+        telemetry_queue.enqueue(conn, type="t", data={"i": i})
+
+    monkeypatch.setattr(telemetry_queue, "MAX_QUEUE_ROWS", 3)
+    telemetry_queue.enqueue(conn, type="t", data={"i": "new"})
+    assert telemetry_queue.count(conn) == 3
