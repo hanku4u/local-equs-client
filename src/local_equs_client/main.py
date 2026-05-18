@@ -10,7 +10,12 @@ from PySide6.QtWidgets import QApplication
 
 from local_equs_client.config import logging as app_logging
 from local_equs_client.config import settings as settings_module
-from local_equs_client.data_layer import app_telemetry, crash_handler, telemetry_client
+from local_equs_client.data_layer import (
+    app_telemetry,
+    crash_handler,
+    telemetry_client,
+    update_client,
+)
 from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
@@ -100,9 +105,29 @@ def main() -> None:
         # Flush once early so short debug sessions don't lose app_start.
         QTimer.singleShot(5_000, telemetry_client.flush)
 
+    # C6.4: auto-updater poll on the user's configured cadence.
+    update_timer: QTimer | None = None
+    if http_client is not None:
+        updater = update_client.UpdateClient(http_client)
+        freq_hours = settings_module.get_settings().update_check_frequency_hours
+        if freq_hours > 0:
+            update_timer = QTimer()
+            update_timer.setInterval(freq_hours * 3600 * 1000)
+            update_timer.timeout.connect(
+                lambda: _prompt_if_update_available(window, updater)
+            )
+            update_timer.start()
+            # First check fires 30 s after launch so the UI settles before
+            # any prompt appears.
+            QTimer.singleShot(
+                30_000, lambda: _prompt_if_update_available(window, updater)
+            )
+
     def _on_quit() -> None:
         if flush_timer is not None:
             flush_timer.stop()
+        if update_timer is not None:
+            update_timer.stop()
         telemetry_client.event("app_exit", **app_telemetry.app_exit_payload())
         app_telemetry.record_exit(conn)
         telemetry_client.flush()
@@ -112,6 +137,45 @@ def main() -> None:
 
     window.show()
     sys.exit(app.exec())
+
+
+def _prompt_if_update_available(
+    parent: object, updater: update_client.UpdateClient
+) -> None:
+    """Background-check for an update and prompt the user via QMessageBox."""
+    from PySide6.QtWidgets import QMessageBox, QWidget
+
+    available = updater.check_for_update()
+    if available is None:
+        return
+
+    parent_widget = parent if isinstance(parent, QWidget) else None
+    body = f"Local EQUS {available.version} is available."
+    if available.release_notes:
+        body += f"\n\n{available.release_notes}"
+    body += "\n\nDownload now? You'll be prompted to install when ready."
+    choice = QMessageBox.question(
+        parent_widget,
+        "Update available",
+        body,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if choice != QMessageBox.StandardButton.Yes:
+        return
+
+    try:
+        out_path = updater.download(available)
+    except Exception as exc:  # noqa: BLE001 — surface anything that goes wrong
+        logger.warning("Update download failed: %s", exc)
+        QMessageBox.warning(parent_widget, "Update failed", str(exc))
+        return
+
+    QMessageBox.information(
+        parent_widget,
+        "Update downloaded",
+        f"Saved {out_path}.\n\nThe installer will launch in a later release.",
+    )
 
 
 if __name__ == "__main__":
