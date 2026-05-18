@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
@@ -35,8 +36,23 @@ from local_equs_client.ui.settings_panel import FirstRunWizard
 logger = logging.getLogger(__name__)
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="local-equs-client")
+    parser.add_argument(
+        "--induce-crash",
+        action="store_true",
+        help=(
+            "Force an uncaught exception after telemetry is wired. "
+            "Used by the M6 crash-reporting smoke test (C6.6); not a "
+            "user-facing feature."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> None:
     """Boot the data layer and run the Qt event loop."""
+    args = _parse_args(sys.argv[1:])
     app_logging.configure_logging()
     crash_handler.install()
     settings = settings_module.get_settings()
@@ -104,6 +120,12 @@ def main() -> None:
         flush_timer.start()
         # Flush once early so short debug sessions don't lose app_start.
         QTimer.singleShot(5_000, telemetry_client.flush)
+
+    # C6.6: deliberate crash for the M6 crash-reporting smoke test.
+    if args.induce_crash:
+        raise RuntimeError(
+            "induce-crash flag set; this exception is intentional (C6.6)."
+        )
 
     # C6.4: auto-updater poll on the user's configured cadence.
     update_timer: QTimer | None = None
