@@ -166,6 +166,49 @@ def test_crash_logged_at_error_level(
     assert any("Uncaught exception" in rec.message for rec in caplog.records)
 
 
+def test_main_thread_crash_triggers_telemetry_flush(
+    _installed_crash_handler, _telemetry_recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flush_calls: list[int] = []
+    monkeypatch.setattr(
+        crash_handler.telemetry_client, "flush", lambda: flush_calls.append(1)
+    )
+    exc_type, exc_value, tb = _raise_then_capture()
+    sys.excepthook(exc_type, exc_value, tb)
+
+    assert flush_calls == [1]
+
+
+def test_thread_crash_triggers_telemetry_flush(
+    _installed_crash_handler, _telemetry_recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flush_calls: list[int] = []
+    monkeypatch.setattr(
+        crash_handler.telemetry_client, "flush", lambda: flush_calls.append(1)
+    )
+    exc_type, exc_value, tb = _raise_then_capture()
+    args = threading.ExceptHookArgs(
+        (exc_type, exc_value, tb, threading.Thread(name="worker-1"))
+    )
+    threading.excepthook(args)
+
+    assert flush_calls == [1]
+
+
+def test_flush_failure_does_not_raise_through_excepthook(
+    _installed_crash_handler, _telemetry_recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _bad_flush() -> int:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(crash_handler.telemetry_client, "flush", _bad_flush)
+    exc_type, exc_value, tb = _raise_then_capture()
+    # Must not propagate; crash hook is last code that runs before exit.
+    sys.excepthook(exc_type, exc_value, tb)
+    # Event still made it to the queue.
+    assert len(_telemetry_recorder.events) == 1
+
+
 def test_chains_to_previous_sys_hook(_telemetry_recorder) -> None:
     received: list[tuple[Any, Any, Any]] = []
 

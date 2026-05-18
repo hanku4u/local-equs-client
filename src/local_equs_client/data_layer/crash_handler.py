@@ -86,6 +86,10 @@ def _crash_hook(
         traceback=_truncate(tb_text),
         thread="main",
     )
+    # Best-effort sync flush so the 'error' event leaves the queue before
+    # the process dies. Network failures / timeouts are swallowed inside
+    # flush() — the event stays queued for the next launch.
+    _safe_flush()
 
     # Chain to the previous hook so default reporting / process exit still runs.
     if _previous_sys_excepthook is not None:
@@ -110,9 +114,24 @@ def _thread_crash_hook(args: threading.ExceptHookArgs) -> None:
         traceback=_truncate(tb_text),
         thread=thread_name,
     )
+    _safe_flush()
 
     if _previous_threading_excepthook is not None:
         _previous_threading_excepthook(args)
+
+
+def _safe_flush() -> None:
+    """Flush telemetry, swallowing anything that goes wrong.
+
+    The crash hook is the last code that runs before the process dies;
+    raising here would mask the original exception. ``flush()`` already
+    handles ServerUnreachable / 5xx by leaving events in the queue, but
+    we still defend against bugs in the flush path itself.
+    """
+    try:
+        telemetry_client.flush()
+    except Exception as exc:  # noqa: BLE001 — last-mile robustness
+        logger.warning("crash handler: flush failed: %s", exc)
 
 
 def _truncate(text: str, limit: int = _MAX_TRACEBACK_CHARS) -> str:
