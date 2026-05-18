@@ -26,6 +26,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _ENTRY = _REPO_ROOT / "src" / "local_equs_client" / "main.py"
 _OUTPUT_DIR = _REPO_ROOT / "dist"
+# Nuitka names its standalone folder ``<entry-basename>.dist``. Our entry is
+# ``main.py``, so without intervention we'd get ``dist/main.dist/``. The
+# installer (C6.2) sources from ``dist/LocalEQUS/`` instead.
+_NUITKA_DEFAULT_FOLDER = _OUTPUT_DIR / "main.dist"
+_FINAL_FOLDER = _OUTPUT_DIR / "LocalEQUS"
 
 
 def app_version() -> str:
@@ -78,7 +83,20 @@ def run_build(*, clean: bool = False) -> int:
     cmd = nuitka_args(version)
     print("Running Nuitka for version", version, flush=True)
     print(" ".join(cmd), flush=True)
-    return subprocess.call(cmd, cwd=_REPO_ROOT)
+    rc = subprocess.call(cmd, cwd=_REPO_ROOT)
+    if rc == 0:
+        _rename_output_folder()
+    return rc
+
+
+def _rename_output_folder() -> None:
+    """Rename Nuitka's ``main.dist/`` to ``LocalEQUS/`` for a tidy install root."""
+    if not _NUITKA_DEFAULT_FOLDER.exists():
+        return
+    if _FINAL_FOLDER.exists():
+        shutil.rmtree(_FINAL_FOLDER)
+    _NUITKA_DEFAULT_FOLDER.rename(_FINAL_FOLDER)
+    print(f"Renamed {_NUITKA_DEFAULT_FOLDER.name} -> {_FINAL_FOLDER.name}", flush=True)
 
 
 def main() -> int:
