@@ -77,6 +77,82 @@ the launch checkbox automatically.
 User state under `%LOCALAPPDATA%\LocalEQUS\` (config.toml, state.db,
 telemetry queue) is **not** removed on uninstall — that's intentional.
 
+## C6.3 — Authenticode signing
+
+Signs the bundled `LocalEQUS.exe` and the installer `.exe` with the OV
+code-signing certificate, timestamps via DigiCert, and verifies the
+result with `signtool verify /pa`.
+
+### One-time setup
+
+Install a **recent Windows SDK** so `signtool.exe` is available. The
+driver searches `$SIGNTOOL`, then PATH, then the default SDK install
+paths under `C:\Program Files (x86)\Windows Kits\10\bin\`.
+
+### Configure the certificate
+
+Set **one** of these env-var groups before invoking `sign.cmd`. The
+.pfx group wins if both are set.
+
+**.pfx file:**
+
+```cmd
+set SIGNING_CERT=C:\secure\codesign.pfx
+set SIGNING_PASSWORD=...
+```
+
+**Windows certificate store** (EV certs on hardware tokens):
+
+```cmd
+set SIGNING_THUMBPRINT=<hex SHA-1 thumbprint, no separators>
+```
+
+Optional overrides:
+
+```cmd
+set SIGNING_TIMESTAMP_URL=http://timestamp.digicert.com  REM default
+set SIGNTOOL=C:\path\to\signtool.exe                     REM auto-discovered
+```
+
+The cert path and password are read from the environment — they are
+never committed to the repo.
+
+### Sign
+
+```cmd
+build\sign.cmd                       REM signs both default targets
+build\sign.cmd path\to\file.exe      REM signs just that file
+```
+
+The default targets are `dist\LocalEQUS\LocalEQUS.exe` and the most
+recent `dist\LocalEQUS-Setup-*.exe`. Each file is signed with
+`/fd SHA256` and timestamped via RFC 3161; then verified with
+`signtool verify /pa /v`. A non-zero exit code halts the pipeline so
+malformed signatures don't reach distribution.
+
+### Pipeline placement
+
+The signing step runs **after** both the Nuitka build and the Inno
+Setup compile, since the installer must include the already-signed
+.exe for SmartScreen to pick up the signature on first launch:
+
+```cmd
+build\nuitka.cmd
+build\sign.cmd dist\LocalEQUS\LocalEQUS.exe
+build\installer.cmd
+build\sign.cmd dist\LocalEQUS-Setup-X.Y.Z.exe
+```
+
+Or, more typically, sign both at the end since the installer is built
+from the bundled .exe and re-signing in the right order is what M6.4
+will automate:
+
+```cmd
+build\nuitka.cmd
+build\installer.cmd
+build\sign.cmd          REM signs both
+```
+
 ## Layout
 
 - `nuitka.cmd` — Windows entry for the Nuitka build.
@@ -84,8 +160,8 @@ telemetry queue) is **not** removed on uninstall — that's intentional.
 - `installer.cmd` — Windows entry for the installer compile.
 - `build_installer.py` — `iscc.exe` discovery + invocation.
 - `installer.iss` — declarative Inno Setup configuration.
-- `sign.cmd` — Authenticode signing of executable + installer (C6.3,
-  not yet present).
+- `sign.cmd` — Windows entry for Authenticode signing.
+- `sign.py` — `signtool.exe` discovery + sign/verify invocation.
 
 Build artifacts (`_nuitka/`, `dist/`, `__pycache__/`) are gitignored;
 only the scripts themselves are committed.
