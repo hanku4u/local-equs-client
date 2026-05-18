@@ -89,6 +89,37 @@ def test_relative_path_joined_to_base_url() -> None:
 
 
 @responses.activate
+def test_post_sends_json_body_and_returns_response() -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", json={"ok": True})
+
+    resp = _client().post("/v1/telemetry", json={"events": [{"type": "t"}]})
+    assert resp.status_code == 200
+    import json as _json
+
+    body = _json.loads(responses.calls[0].request.body)
+    assert body == {"events": [{"type": "t"}]}
+
+
+@responses.activate
+def test_post_5xx_raises_server_error() -> None:
+    responses.add(responses.POST, f"{_BASE}/v1/telemetry", status=503, body="busy")
+    with pytest.raises(ServerError) as info:
+        _client().post("/v1/telemetry", json={})
+    assert info.value.status_code == 503
+
+
+@responses.activate
+def test_post_connection_error_raises_server_unreachable() -> None:
+    responses.add(
+        responses.POST,
+        f"{_BASE}/v1/telemetry",
+        body=responses.ConnectionError(),
+    )
+    with pytest.raises(ServerUnreachable):
+        _client().post("/v1/telemetry", json={})
+
+
+@responses.activate
 def test_absolute_url_not_re_joined() -> None:
     other = "https://other.example.com/x"
     responses.add(responses.GET, other, body="ok")
