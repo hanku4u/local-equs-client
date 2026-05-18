@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from local_equs_client.config import logging as app_logging
 from local_equs_client.config import settings as settings_module
+from local_equs_client.data_layer import app_telemetry, telemetry_client
 from local_equs_client.data_layer.download_manager import DownloadManager
 from local_equs_client.data_layer.http import HttpClient
 from local_equs_client.data_layer.local_library import LocalLibrary
@@ -82,5 +84,28 @@ def main() -> None:
         view_controller=view_controller,
         conn=conn,
     )
+
+    # C5.12: app-lifecycle telemetry. Only register a Telemetry client when
+    # we have a server URL — otherwise event() / flush() stay no-ops.
+    flush_timer: QTimer | None = None
+    if http_client is not None:
+        telemetry = telemetry_client.Telemetry(conn, http_client)
+        telemetry_client.set_client(telemetry)
+        telemetry_client.event("app_start", **app_telemetry.app_start_payload(conn))
+        flush_timer = QTimer()
+        flush_timer.setInterval(60_000)
+        flush_timer.timeout.connect(telemetry_client.flush)
+        flush_timer.start()
+
+    def _on_quit() -> None:
+        if flush_timer is not None:
+            flush_timer.stop()
+        telemetry_client.event("app_exit", **app_telemetry.app_exit_payload())
+        app_telemetry.record_exit(conn)
+        telemetry_client.flush()
+        telemetry_client.set_client(None)
+
+    app.aboutToQuit.connect(_on_quit)
+
     window.show()
     sys.exit(app.exec())
