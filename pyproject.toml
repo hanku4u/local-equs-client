@@ -33,6 +33,11 @@ spike = [
     "numpy>=1.26",
     "psutil>=5.9",
 ]
+build = [
+    "nuitka>=2.0",
+    "zstandard>=0.22",
+    "ordered-set>=4.1",
+]
 
 [project.scripts]
 local-equs-client = "local_equs_client.main:main"
