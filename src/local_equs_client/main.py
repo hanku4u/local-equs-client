@@ -96,6 +96,8 @@ def main() -> None:
         flush_timer.setInterval(60_000)
         flush_timer.timeout.connect(telemetry_client.flush)
         flush_timer.start()
+        # Flush once early so short debug sessions don't lose app_start.
+        QTimer.singleShot(5_000, telemetry_client.flush)
 
     def _on_quit() -> None:
         if flush_timer is not None:
