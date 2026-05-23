@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-equs-client"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local EQUS desktop client for sensor data exploration"
 readme = "README.md"
 requires-python = ">=3.12"
