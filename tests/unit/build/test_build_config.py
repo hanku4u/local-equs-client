@@ -64,6 +64,24 @@ def test_nuitka_args_excludes_test_code(build_config) -> None:
     assert "--nofollow-import-to=pytest" in args
 
 
+def test_nuitka_args_includes_pyqtgraph_dynamic_pyside6_modules(build_config) -> None:
+    # pyqtgraph imports these via importlib.import_module(), which Nuitka's
+    # static analysis can't follow. Without explicit --include-module the
+    # packaged app dies at import with ModuleNotFoundError before any window
+    # appears. Regression guard for the C6.1 silent-crash fix.
+    args = build_config.nuitka_args("1.2.3")
+    assert "--include-module=PySide6.QtOpenGL" in args
+    assert "--include-module=PySide6.QtOpenGLWidgets" in args
+
+
+def test_nuitka_args_bundles_own_package_data(build_config) -> None:
+    # The SQL migration files under state/migrations/ are loaded at runtime;
+    # Nuitka bundles code but not data by default, so without this the
+    # packaged app raises FileNotFoundError in db.migrate() on first launch.
+    args = build_config.nuitka_args("1.2.3")
+    assert "--include-package-data=local_equs_client" in args
+
+
 def test_nuitka_args_stamps_version_metadata(build_config) -> None:
     args = build_config.nuitka_args("1.2.3")
     assert "--file-version=1.2.3" in args

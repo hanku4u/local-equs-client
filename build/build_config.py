@@ -53,12 +53,25 @@ def nuitka_args(version: str) -> list[str]:
         "--windows-console-mode=disable",
         f"--output-dir={_OUTPUT_DIR}",
         "--output-filename=LocalEQUS.exe",
+        # pyqtgraph pulls these PySide6 submodules in via
+        # importlib.import_module() (pyqtgraph/Qt/OpenGLHelpers.py), which
+        # Nuitka's static analysis can't follow — so they must be named
+        # explicitly or the packaged app dies at import with
+        # ModuleNotFoundError before any window appears.
+        "--include-module=PySide6.QtOpenGL",
+        "--include-module=PySide6.QtOpenGLWidgets",
         # Native DLLs that ride alongside the Python package data.
         "--include-package-data=duckdb",
         "--include-package-data=pyarrow",
         # Make sure every submodule of our package is bundled, even ones
         # that aren't imported at startup (e.g. settings_panel).
         "--include-package=local_equs_client",
+        # Bundle our own non-code data files. Today that's the SQL migration
+        # files under state/migrations/, loaded at runtime via
+        # Path(__file__).parent.iterdir(). Nuitka bundles code but not data
+        # by default, so without this db.migrate() raises FileNotFoundError
+        # on first launch. Covers any future package data (icons, styles…) too.
+        "--include-package-data=local_equs_client",
         # Test code never reaches runtime; reject any accidental import.
         "--nofollow-import-to=tests",
         "--nofollow-import-to=pytest",
